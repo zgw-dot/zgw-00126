@@ -83,8 +83,8 @@ export interface ThresholdHistory {
   updatedAt: string;
 }
 
-export type OperationType = 'override_qualification' | 'approve_application' | 'reject_application' | 'create_arrangement';
-export type TargetType = 'qualification' | 'application' | 'arrangement';
+export type OperationType = 'override_qualification' | 'approve_application' | 'reject_application' | 'create_arrangement' | 'update_threshold' | 'import_grades';
+export type TargetType = 'qualification' | 'application' | 'arrangement' | 'threshold' | 'grade';
 
 export interface OperationSnapshot {
   id: number;
@@ -97,4 +97,11 @@ export interface OperationSnapshot {
   reverted: boolean;
   revertedAt?: string;
   createdAt: string;
+}
+
+export interface Pagination {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
 }

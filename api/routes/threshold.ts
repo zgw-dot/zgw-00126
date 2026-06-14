@@ -1,5 +1,14 @@
 import { Router, type Request, type Response } from 'express'
-import { queryAll, queryOne, run, recalculateQualifications, addAuditLog } from '../database.js'
+import {
+  queryAll,
+  queryOne,
+  run,
+  recalculateQualifications,
+  addAuditLog,
+  getThreshold,
+  createSnapshot,
+  deleteOldSameDaySnapshots,
+} from '../database.js'
 import { authMiddleware, requireRole } from '../middleware.js'
 import type { ThresholdConfig } from '../types.js'
 
@@ -10,7 +19,7 @@ router.use(authMiddleware)
 router.get('/', async (req: Request, res: Response): Promise<void> => {
   try {
     const config = queryOne<ThresholdConfig>(
-      'SELECT * FROM threshold_config ORDER BY updated_at DESC LIMIT 1',
+      'SELECT * FROM threshold_config ORDER BY id DESC LIMIT 1',
     )
 
     res.json({ success: true, data: config })
@@ -28,17 +37,38 @@ router.put('/', requireRole('admin'), async (req: Request, res: Response): Promi
       return
     }
 
+    const oldScore = getThreshold()
+    const newScore = Number(score)
+
+    if (Math.abs(oldScore - newScore) < 0.001) {
+      res.status(400).json({ success: false, error: '阈值未发生变化' })
+      return
+    }
+
+    deleteOldSameDaySnapshots('update_threshold', req.userId!)
+
+    createSnapshot(
+      'update_threshold',
+      'threshold',
+      0,
+      {
+        oldScore,
+        newScore,
+      },
+      req.userId!,
+    )
+
     run(
       'INSERT INTO threshold_config (score, updated_by) VALUES (?, ?)',
-      [Number(score), req.userId],
+      [newScore, req.userId],
     )
 
     recalculateQualifications()
 
-    addAuditLog('update', 'threshold', 0, req.userId!, `更新阈值: ${score}`)
+    addAuditLog('update', 'threshold', 0, req.userId!, `更新阈值: ${oldScore} -> ${newScore}`)
 
     const config = queryOne<ThresholdConfig>(
-      'SELECT * FROM threshold_config ORDER BY updated_at DESC LIMIT 1',
+      'SELECT * FROM threshold_config ORDER BY id DESC LIMIT 1',
     )
 
     res.json({ success: true, data: config })

@@ -1,24 +1,38 @@
-import { useEffect, useState } from 'react';
-import { ClipboardList, Calendar, AlertTriangle, Undo2, Info } from 'lucide-react';
+import { useEffect, useState, useCallback } from 'react';
+import { ClipboardList, Calendar, AlertTriangle, Undo2, Info, ChevronLeft, ChevronRight, Filter } from 'lucide-react';
 import StatsCard from '@/components/StatsCard';
 import Badge from '@/components/Badge';
 import Modal from '@/components/Modal';
 import { api } from '@/utils/api';
-import type { Application, Arrangement, ExamRoom, OperationSnapshot } from '@/types';
+import type { Application, Arrangement, ExamRoom, OperationSnapshot, Pagination } from '@/types';
 
 const operationTypeLabels: Record<string, string> = {
   override_qualification: '覆盖资格',
   approve_application: '审批通过',
   reject_application: '拒绝申请',
   create_arrangement: '创建排考',
+  update_threshold: '修改阈值',
+  import_grades: '导入成绩',
 };
 
-const operationTypeBadge: Record<string, 'approved' | 'rejected' | 'overridden' | 'scheduled'> = {
+const operationTypeBadge: Record<string, 'approved' | 'rejected' | 'overridden' | 'scheduled' | 'pending'> = {
   override_qualification: 'overridden',
   approve_application: 'approved',
   reject_application: 'rejected',
   create_arrangement: 'scheduled',
+  update_threshold: 'pending',
+  import_grades: 'pending',
 };
+
+const typeFilterOptions = [
+  { value: '', label: '全部类型' },
+  { value: 'override_qualification', label: '覆盖资格' },
+  { value: 'approve_application', label: '审批通过' },
+  { value: 'reject_application', label: '拒绝申请' },
+  { value: 'create_arrangement', label: '创建排考' },
+  { value: 'update_threshold', label: '修改阈值' },
+  { value: 'import_grades', label: '导入成绩' },
+];
 
 function getSnapshotPreview(op: OperationSnapshot): string[] {
   const data = op.snapshotData;
@@ -50,6 +64,16 @@ function getSnapshotPreview(op: OperationSnapshot): string[] {
       fields.push(`时间: ${arr.start_time ?? '-'} - ${arr.end_time ?? '-'}`);
       break;
     }
+    case 'update_threshold': {
+      fields.push(`原阈值: ${data.oldScore ?? '-'}`);
+      fields.push(`新阈值: ${data.newScore ?? '-'}`);
+      break;
+    }
+    case 'import_grades': {
+      fields.push(`导入前成绩: ${data.gradeCount ?? 0} 条`);
+      fields.push(`导入前资格: ${data.qualCount ?? 0} 条`);
+      break;
+    }
   }
 
   return fields;
@@ -64,27 +88,48 @@ export default function AdminDashboard() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [selectedOp, setSelectedOp] = useState<OperationSnapshot | null>(null);
   const [reverting, setReverting] = useState(false);
+  const [typeFilter, setTypeFilter] = useState('');
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 20, total: 0, totalPages: 0 });
 
-  const loadData = () => {
-    setLoading(true);
+  const loadStats = useCallback(() => {
     Promise.all([
       api.get<Application[]>('/applications?status=pending'),
       api.get<Arrangement[]>('/arrangements?courseId='),
       api.get<ExamRoom[]>('/exam-rooms'),
-      api.get<OperationSnapshot[]>('/operations?limit=20'),
-    ])
-      .then(([apps, arrs, rooms, ops]) => {
-        setPendingCount(apps.length);
-        setScheduledCount(arrs.filter((a) => a.status === 'scheduled').length);
-        setWarnings(rooms.filter((r) => (r.usedSeats || 0) / (r.capacity || 1) >= 0.9).length);
-        setOperations(ops);
+    ]).then(([apps, arrs, rooms]) => {
+      setPendingCount(apps.length);
+      setScheduledCount(arrs.filter((a) => a.status === 'scheduled').length);
+      setWarnings(rooms.filter((r) => (r.usedSeats || 0) / (r.capacity || 1) >= 0.9).length);
+    });
+  }, []);
+
+  const loadOperations = useCallback(() => {
+    setLoading(true);
+    const params = new URLSearchParams({ limit: '20', page: String(page) });
+    if (typeFilter) {
+      params.set('type', typeFilter);
+    }
+    api.get<{ items: OperationSnapshot[]; pagination: Pagination }>(`/operations?${params.toString()}`)
+      .then((res) => {
+        setOperations(res.items);
+        setPagination(res.pagination);
       })
       .finally(() => setLoading(false));
-  };
+  }, [page, typeFilter]);
 
   useEffect(() => {
-    loadData();
-  }, []);
+    loadStats();
+  }, [loadStats]);
+
+  useEffect(() => {
+    loadOperations();
+  }, [loadOperations]);
+
+  const handleTypeFilterChange = (value: string) => {
+    setTypeFilter(value);
+    setPage(1);
+  };
 
   const handleRevert = (op: OperationSnapshot) => {
     setSelectedOp(op);
@@ -98,7 +143,8 @@ export default function AdminDashboard() {
       await api.post(`/operations/${selectedOp.id}/revert`);
       setConfirmOpen(false);
       setSelectedOp(null);
-      loadData();
+      loadOperations();
+      loadStats();
     } catch (err) {
       alert(err instanceof Error ? err.message : '撤销失败');
     } finally {
@@ -106,7 +152,7 @@ export default function AdminDashboard() {
     }
   };
 
-  if (loading) return <div className="text-center py-12 text-slate-400">加载中...</div>;
+  if (loading && operations.length === 0) return <div className="text-center py-12 text-slate-400">加载中...</div>;
 
   return (
     <div className="space-y-6">
@@ -135,12 +181,27 @@ export default function AdminDashboard() {
 
       <div className="bg-white rounded-lg border border-slate-200 shadow-sm p-5">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-slate-800">最近操作</h2>
-          <div className="flex items-center gap-1 text-xs text-slate-400">
-            <Info size={14} />
-            <span>悬停查看详情</span>
+          <h2 className="text-lg font-semibold text-slate-800">操作记录</h2>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <Filter size={14} className="text-slate-400" />
+              <select
+                value={typeFilter}
+                onChange={(e) => handleTypeFilterChange(e.target.value)}
+                className="text-sm border border-slate-200 rounded-md px-2 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400"
+              >
+                {typeFilterOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-center gap-1 text-xs text-slate-400">
+              <Info size={14} />
+              <span>悬停查看详情</span>
+            </div>
           </div>
         </div>
+
         {operations.length === 0 ? (
           <p className="text-slate-400 text-sm">暂无操作记录</p>
         ) : (
@@ -195,6 +256,56 @@ export default function AdminDashboard() {
             ))}
           </div>
         )}
+
+        {pagination.totalPages > 1 && (
+          <div className="flex items-center justify-between mt-4 pt-3 border-t border-slate-100">
+            <span className="text-xs text-slate-400">
+              共 {pagination.total} 条记录，第 {pagination.page}/{pagination.totalPages} 页
+            </span>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="p-1.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                <ChevronLeft size={16} />
+              </button>
+              {Array.from({ length: pagination.totalPages }, (_, i) => i + 1)
+                .filter((p) => p === 1 || p === pagination.totalPages || Math.abs(p - page) <= 1)
+                .reduce<(number | string)[]>((acc, p, idx, arr) => {
+                  if (idx > 0 && p - (arr[idx - 1] as number) > 1) {
+                    acc.push('...');
+                  }
+                  acc.push(p);
+                  return acc;
+                }, [])
+                .map((p, idx) =>
+                  typeof p === 'string' ? (
+                    <span key={`ellipsis-${idx}`} className="px-1 text-xs text-slate-400">...</span>
+                  ) : (
+                    <button
+                      key={p}
+                      onClick={() => setPage(p)}
+                      className={`min-w-[28px] h-7 rounded-md text-xs transition-colors ${
+                        p === page
+                          ? 'bg-amber-500 text-white font-medium'
+                          : 'text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      {p}
+                    </button>
+                  ),
+                )}
+              <button
+                onClick={() => setPage((p) => Math.min(pagination.totalPages, p + 1))}
+                disabled={page >= pagination.totalPages}
+                className="p-1.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <Modal
@@ -239,6 +350,14 @@ export default function AdminDashboard() {
                 <span className="font-medium">{new Date(selectedOp.createdAt).toLocaleString()}</span>
               </div>
             </div>
+            {getSnapshotPreview(selectedOp).length > 0 && (
+              <div className="bg-amber-50 rounded-md p-3 space-y-1">
+                <div className="text-xs font-medium text-amber-700 mb-1">快照详情</div>
+                {getSnapshotPreview(selectedOp).map((field, i) => (
+                  <div key={i} className="text-xs text-amber-600">{field}</div>
+                ))}
+              </div>
+            )}
             <p className="text-xs text-amber-600">
               ⚠ 撤销后相关的申请和排考也会被级联取消
             </p>

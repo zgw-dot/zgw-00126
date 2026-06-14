@@ -1,6 +1,15 @@
 import { Router, type Request, type Response } from 'express'
 import Papa from 'papaparse'
-import { queryAll, queryOne, run, recalculateQualifications, getDB } from '../database.js'
+import {
+  queryAll,
+  queryOne,
+  run,
+  recalculateQualifications,
+  getDB,
+  getAllGrades,
+  getAllQualifications,
+  createSnapshot,
+} from '../database.js'
 import { authMiddleware, requireRole } from '../middleware.js'
 import type { Grade } from '../types.js'
 
@@ -72,6 +81,22 @@ router.post('/import', async (req: Request, res: Response): Promise<void> => {
       res.status(400).json({ success: false, error: '缺少CSV数据' })
       return
     }
+
+    const gradesBefore = getAllGrades()
+    const qualsBefore = getAllQualifications()
+
+    createSnapshot(
+      'import_grades',
+      'grade',
+      0,
+      {
+        grades: gradesBefore,
+        qualifications: qualsBefore,
+        gradeCount: gradesBefore.length,
+        qualCount: qualsBefore.length,
+      },
+      req.userId!,
+    )
 
     const result = Papa.parse(csv, {
       header: true,

@@ -94,8 +94,9 @@ async function test() {
     const opsRes = await request('/operations?limit=5', {
       headers: { Authorization: `Bearer ${adminToken}` },
     })
-    const overrideOp = opsRes.data.data.find((o) => o.operationType === 'override_qualification' && o.reverted === false && o.reverted === 0 ? false : !o.reverted)
-    const overrideOp2 = opsRes.data.data.find((o) => o.operationType === 'override_qualification')
+    const opsList = opsRes.data.data.items || opsRes.data.data
+    const overrideOp = opsList.find((o) => o.operationType === 'override_qualification' && o.reverted === false && o.reverted === 0 ? false : !o.reverted)
+    const overrideOp2 = opsList.find((o) => o.operationType === 'override_qualification')
     assert(overrideOp2 !== undefined, '操作快照已创建')
 
     const origAfterRes = await request(`/qualifications/${origQual.id}`, {
@@ -204,7 +205,8 @@ async function test() {
         const opsAfterApprove = await request('/operations?limit=20', {
           headers: { Authorization: `Bearer ${adminToken}` },
         })
-        const approveOp = opsAfterApprove.data.data.find(
+        const opsAfterApproveList = opsAfterApprove.data.data.items || opsAfterApprove.data.data
+        const approveOp = opsAfterApproveList.find(
           (o) => o.operationType === 'approve_application' && o.targetId === application.id,
         )
         assert(approveOp !== undefined, '审批操作快照已创建')
@@ -348,7 +350,8 @@ async function test() {
         const opsRes = await request('/operations?limit=30', {
           headers: { Authorization: `Bearer ${adminToken}` },
         })
-        const arrOp = opsRes.data.data.find(
+        const opsList2 = opsRes.data.data.items || opsRes.data.data
+        const arrOp = opsList2.find(
           (o) => o.operationType === 'create_arrangement' && o.targetId === arrangement.id,
         )
         assert(arrOp !== undefined, '排考操作快照已创建')
@@ -372,7 +375,7 @@ async function test() {
     const opsRes = await request('/operations?limit=5', {
       headers: { Authorization: `Bearer ${adminToken}` },
     })
-    const ops = opsRes.data.data
+    const ops = opsRes.data.data.items || opsRes.data.data
     if (ops.length > 0) {
       const op = ops[0]
 

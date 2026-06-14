@@ -6,7 +6,14 @@ import {
   addAuditLog,
   getSnapshotById,
   listSnapshots,
+  countSnapshots,
   markSnapshotReverted,
+  getThreshold,
+  recalculateQualifications,
+  clearGrades,
+  clearQualifications,
+  bulkInsertGrades,
+  bulkInsertQualifications,
   type OperationSnapshot,
 } from '../database.js'
 import { authMiddleware, requireRole } from '../middleware.js'
@@ -19,8 +26,25 @@ router.use(requireRole('admin'))
 router.get('/', async (req: Request, res: Response): Promise<void> => {
   try {
     const limit = Number(req.query.limit) || 20
-    const snapshots = listSnapshots(limit)
-    res.json({ success: true, data: snapshots })
+    const page = Number(req.query.page) || 1
+    const offset = (page - 1) * limit
+    const operationType = req.query.type as string | undefined
+
+    const snapshots = listSnapshots(limit, offset, operationType)
+    const total = countSnapshots(operationType)
+
+    res.json({
+      success: true,
+      data: {
+        items: snapshots,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      },
+    })
   } catch (error) {
     res.status(500).json({ success: false, error: '获取操作列表失败' })
   }
@@ -77,6 +101,12 @@ router.post('/:id/revert', async (req: Request, res: Response): Promise<void> =>
       case 'create_arrangement':
         resultMessage = await revertCreateArrangement(snapshot, req.userId!)
         break
+      case 'update_threshold':
+        resultMessage = await revertUpdateThreshold(snapshot, req.userId!)
+        break
+      case 'import_grades':
+        resultMessage = await revertImportGrades(snapshot, req.userId!)
+        break
       default:
         res.status(400).json({ success: false, error: `不支持撤销的操作类型: ${snapshot.operationType}` })
         return
@@ -92,6 +122,77 @@ router.post('/:id/revert', async (req: Request, res: Response): Promise<void> =>
     res.status(400).json({ success: false, error: message })
   }
 })
+
+async function revertUpdateThreshold(snapshot: OperationSnapshot, operatorId: number): Promise<string> {
+  const data = snapshot.snapshotData as {
+    oldScore: number
+    newScore: number
+  }
+
+  const currentScore = getThreshold()
+
+  if (Math.abs(currentScore - data.newScore) > 0.001) {
+    throw new Error(`当前阈值(${currentScore})与快照记录的新阈值(${data.newScore})不一致，可能已被其他操作修改`)
+  }
+
+  run(
+    'INSERT INTO threshold_config (score, updated_by) VALUES (?, ?)',
+    [data.oldScore, operatorId],
+  )
+
+  recalculateQualifications()
+
+  addAuditLog('revert_threshold', 'threshold', 0, operatorId, `撤销阈值修改，恢复为 ${data.oldScore}`)
+
+  return `已撤销阈值修改操作，阈值从 ${data.newScore} 恢复为 ${data.oldScore}，资格已重新计算`
+}
+
+async function revertImportGrades(snapshot: OperationSnapshot, operatorId: number): Promise<string> {
+  const data = snapshot.snapshotData as {
+    grades: Array<Record<string, unknown>>
+    qualifications: Array<Record<string, unknown>>
+    gradeCount: number
+    qualCount: number
+  }
+
+  clearGrades()
+  clearQualifications()
+
+  const gradesToRestore = (data.grades || []).map((g) => ({
+    student_id: Number(g.student_id),
+    course_id: Number(g.course_id),
+    score: Number(g.score),
+  }))
+
+  const qualsToRestore = (data.qualifications || []).map((q) => ({
+    student_id: Number(q.student_id),
+    course_id: Number(q.course_id),
+    qualified: Number(q.qualified),
+    source: String(q.source),
+    status: String(q.status),
+    reason: q.reason ? String(q.reason) : null,
+    overridden_by: q.overridden_by ? Number(q.overridden_by) : null,
+    created_at: q.created_at ? String(q.created_at) : undefined,
+    updated_at: q.updated_at ? String(q.updated_at) : undefined,
+  }))
+
+  if (gradesToRestore.length > 0) {
+    bulkInsertGrades(gradesToRestore)
+  }
+  if (qualsToRestore.length > 0) {
+    bulkInsertQualifications(qualsToRestore)
+  }
+
+  addAuditLog(
+    'revert_import',
+    'grade',
+    0,
+    operatorId,
+    `撤销成绩导入，恢复 ${gradesToRestore.length} 条成绩和 ${qualsToRestore.length} 条资格`,
+  )
+
+  return `已撤销成绩导入操作，恢复到导入前状态：${gradesToRestore.length} 条成绩、${qualsToRestore.length} 条资格`
+}
 
 async function revertOverrideQualification(snapshot: OperationSnapshot, operatorId: number): Promise<string> {
   const data = snapshot.snapshotData as {

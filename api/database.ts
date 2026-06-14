@@ -204,7 +204,7 @@ export function run(sql: string, params: unknown[] = []): void {
 
 export function getThreshold(): number {
   const row = queryOne<{ score: number }>(
-    'SELECT score FROM threshold_config ORDER BY updated_at DESC LIMIT 1',
+    'SELECT score FROM threshold_config ORDER BY id DESC LIMIT 1',
   )
   return row ? row.score : 60
 }
@@ -285,6 +285,157 @@ export function createSnapshot(
   return result?.id || 0
 }
 
+export function deleteOldSameDaySnapshots(operationType: string, operatorId: number): void {
+  run(
+    `DELETE FROM operation_snapshots
+     WHERE operation_type = ?
+       AND operator_id = ?
+       AND reverted = 0
+       AND DATE(created_at) = DATE('now')`,
+    [operationType, operatorId],
+  )
+}
+
+export function listSnapshots(
+  limit = 20,
+  offset = 0,
+  operationType?: string,
+  operatorId?: number,
+): OperationSnapshot[] {
+  let sql = `
+    SELECT os.*, u.name AS operatorName
+    FROM operation_snapshots os
+    JOIN users u ON os.operator_id = u.id
+    WHERE 1=1
+  `
+  const params: unknown[] = []
+
+  if (operationType) {
+    sql += ' AND os.operation_type = ?'
+    params.push(operationType)
+  }
+
+  if (operatorId) {
+    sql += ' AND os.operator_id = ?'
+    params.push(operatorId)
+  }
+
+  sql += ' ORDER BY os.id DESC LIMIT ? OFFSET ?'
+  params.push(limit, offset)
+
+  const rows = queryAll<{
+    id: number
+    operation_type: string
+    target_type: string
+    target_id: number
+    snapshot_data: string
+    operator_id: number
+    reverted: number
+    reverted_at: string | null
+    created_at: string
+    operatorName: string
+  }>(sql, params)
+
+  return rows.map((row) => ({
+    id: row.id,
+    operationType: row.operation_type,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    snapshotData: JSON.parse(row.snapshot_data),
+    operatorId: row.operator_id,
+    reverted: row.reverted === 1,
+    revertedAt: row.reverted_at || undefined,
+    createdAt: row.created_at,
+    operatorName: row.operatorName,
+  }))
+}
+
+export function countSnapshots(operationType?: string, operatorId?: number): number {
+  let sql = 'SELECT COUNT(*) AS cnt FROM operation_snapshots WHERE 1=1'
+  const params: unknown[] = []
+
+  if (operationType) {
+    sql += ' AND operation_type = ?'
+    params.push(operationType)
+  }
+
+  if (operatorId) {
+    sql += ' AND operator_id = ?'
+    params.push(operatorId)
+  }
+
+  const row = queryOne<{ cnt: number }>(sql, params)
+  return row?.cnt || 0
+}
+
+export function getAllGrades(): Array<Record<string, unknown>> {
+  return queryAll('SELECT * FROM grades')
+}
+
+export function getAllQualifications(): Array<Record<string, unknown>> {
+  return queryAll('SELECT * FROM qualifications')
+}
+
+export function clearGrades(): void {
+  run('DELETE FROM grades')
+}
+
+export function clearQualifications(): void {
+  run('DELETE FROM qualifications')
+}
+
+export function bulkInsertGrades(grades: Array<{ student_id: number; course_id: number; score: number }>): void {
+  const database = getDB()
+  const stmt = database.prepare(
+    'INSERT INTO grades (student_id, course_id, score) VALUES (?, ?, ?)',
+  )
+  for (const g of grades) {
+    stmt.bind([g.student_id, g.course_id, g.score])
+    stmt.step()
+    stmt.reset()
+  }
+  stmt.free()
+  saveDB()
+}
+
+export function bulkInsertQualifications(
+  quals: Array<{
+    student_id: number
+    course_id: number
+    qualified: number
+    source: string
+    status: string
+    reason?: string | null
+    overridden_by?: number | null
+    created_at?: string
+    updated_at?: string
+  }>,
+): void {
+  const database = getDB()
+  const stmt = database.prepare(
+    `INSERT INTO qualifications
+     (student_id, course_id, qualified, source, status, reason, overridden_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+  for (const q of quals) {
+    stmt.bind([
+      q.student_id,
+      q.course_id,
+      q.qualified,
+      q.source,
+      q.status,
+      q.reason || null,
+      q.overridden_by || null,
+      q.created_at || new Date().toISOString(),
+      q.updated_at || new Date().toISOString(),
+    ])
+    stmt.step()
+    stmt.reset()
+  }
+  stmt.free()
+  saveDB()
+}
+
 export interface OperationSnapshot {
   id: number
   operationType: string
@@ -324,50 +475,6 @@ export function getSnapshotById(id: number): OperationSnapshot | null {
     revertedAt: row.reverted_at || undefined,
     createdAt: row.created_at,
   }
-}
-
-export function listSnapshots(limit = 20, operatorId?: number): OperationSnapshot[] {
-  let sql = `
-    SELECT os.*, u.name AS operatorName
-    FROM operation_snapshots os
-    JOIN users u ON os.operator_id = u.id
-    WHERE 1=1
-  `
-  const params: unknown[] = []
-
-  if (operatorId) {
-    sql += ' AND os.operator_id = ?'
-    params.push(operatorId)
-  }
-
-  sql += ' ORDER BY os.id DESC LIMIT ?'
-  params.push(limit)
-
-  const rows = queryAll<{
-    id: number
-    operation_type: string
-    target_type: string
-    target_id: number
-    snapshot_data: string
-    operator_id: number
-    reverted: number
-    reverted_at: string | null
-    created_at: string
-    operatorName: string
-  }>(sql, params)
-
-  return rows.map((row) => ({
-    id: row.id,
-    operationType: row.operation_type,
-    targetType: row.target_type,
-    targetId: row.target_id,
-    snapshotData: JSON.parse(row.snapshot_data),
-    operatorId: row.operator_id,
-    reverted: row.reverted === 1,
-    revertedAt: row.reverted_at || undefined,
-    createdAt: row.created_at,
-    operatorName: row.operatorName,
-  }))
 }
 
 export function markSnapshotReverted(id: number): void {
