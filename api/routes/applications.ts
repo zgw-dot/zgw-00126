@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express'
-import { queryAll, queryOne, run, addAuditLog, createSnapshot } from '../database.js'
+import { queryAll, queryOne, run, addAuditLog, createSnapshot, createNotification } from '../database.js'
 import { authMiddleware, requireRole } from '../middleware.js'
+import type { BatchResultItem } from '../types.js'
 interface AppRow {
   id: number
   student_id: number
@@ -179,6 +180,16 @@ router.post('/:id/approve', requireRole('admin'), async (req: Request, res: Resp
 
     addAuditLog('approve', 'application', Number(id), req.userId!, '审批通过')
 
+    const courseRow = queryOne<{ name: string }>('SELECT name FROM courses WHERE id = ?', [app.course_id])
+    createNotification(
+      app.student_id,
+      'application_approved',
+      '补考申请已通过',
+      `您的${courseRow?.name || '课程'}补考申请已通过审批`,
+      'application',
+      Number(id),
+    )
+
     const updated = queryOne<AppRow>(
       `SELECT a.id, a.student_id, a.course_id, a.qualification_id, a.status,
               a.reject_reason, a.reviewed_by, a.reviewed_at, a.created_at,
@@ -239,6 +250,16 @@ router.post('/:id/reject', requireRole('admin'), async (req: Request, res: Respo
 
     addAuditLog('reject', 'application', Number(id), req.userId!, `拒绝原因: ${reason}`)
 
+    const courseRow = queryOne<{ name: string }>('SELECT name FROM courses WHERE id = ?', [app.course_id])
+    createNotification(
+      app.student_id,
+      'application_rejected',
+      '补考申请被拒绝',
+      `您的${courseRow?.name || '课程'}补考申请被拒绝，原因：${reason}`,
+      'application',
+      Number(id),
+    )
+
     const updated = queryOne<AppRow>(
       `SELECT a.id, a.student_id, a.course_id, a.qualification_id, a.status,
               a.reject_reason, a.reviewed_by, a.reviewed_at, a.created_at,
@@ -296,6 +317,166 @@ router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
     res.json({ success: true, data: updated })
   } catch (error) {
     res.status(500).json({ success: false, error: '撤回申请失败' })
+  }
+})
+
+router.post('/batch-approve', requireRole('admin'), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { ids } = req.body
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      res.status(400).json({ success: false, error: '缺少申请ID列表' })
+      return
+    }
+
+    const results: BatchResultItem[] = []
+
+    for (const rawId of ids) {
+      const id = Number(rawId)
+      try {
+        const app = queryOne<AppRow>('SELECT * FROM applications WHERE id = ?', [id])
+        if (!app) {
+          results.push({ id, status: 'skipped', reason: '申请不存在' })
+          continue
+        }
+        if (app.status !== 'pending') {
+          const statusLabel: Record<string, string> = {
+            approved: '已通过',
+            rejected: '已拒绝',
+            withdrawn: '已撤回',
+          }
+          results.push({ id, status: 'skipped', reason: `申请状态已变更为${statusLabel[app.status] || app.status}，已被其他教务处理` })
+          continue
+        }
+
+        createSnapshot(
+          'approve_application',
+          'application',
+          id,
+          { application: app },
+          req.userId!,
+        )
+
+        run(
+          'UPDATE applications SET status = ?, reviewed_by = ?, reviewed_at = datetime(\'now\') WHERE id = ?',
+          ['approved', req.userId, id],
+        )
+
+        addAuditLog('approve', 'application', id, req.userId!, '批量审批通过')
+
+        const courseRow = queryOne<{ name: string }>('SELECT name FROM courses WHERE id = ?', [app.course_id])
+        createNotification(
+          app.student_id,
+          'application_approved',
+          '补考申请已通过',
+          `您的${courseRow?.name || '课程'}补考申请已通过审批`,
+          'application',
+          id,
+        )
+
+        results.push({ id, status: 'success' })
+      } catch (e) {
+        results.push({ id, status: 'failed', reason: e instanceof Error ? e.message : '处理失败' })
+      }
+    }
+
+    const successCount = results.filter((r) => r.status === 'success').length
+    const skippedCount = results.filter((r) => r.status === 'skipped').length
+    const failedCount = results.filter((r) => r.status === 'failed').length
+
+    res.json({
+      success: true,
+      data: {
+        total: ids.length,
+        success: successCount,
+        skipped: skippedCount,
+        failed: failedCount,
+        details: results,
+      },
+    })
+  } catch (error) {
+    res.status(500).json({ success: false, error: '批量审批失败' })
+  }
+})
+
+router.post('/batch-reject', requireRole('admin'), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { ids, reason } = req.body
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      res.status(400).json({ success: false, error: '缺少申请ID列表' })
+      return
+    }
+    if (!reason) {
+      res.status(400).json({ success: false, error: '缺少拒绝原因' })
+      return
+    }
+
+    const results: BatchResultItem[] = []
+
+    for (const rawId of ids) {
+      const id = Number(rawId)
+      try {
+        const app = queryOne<AppRow>('SELECT * FROM applications WHERE id = ?', [id])
+        if (!app) {
+          results.push({ id, status: 'skipped', reason: '申请不存在' })
+          continue
+        }
+        if (app.status !== 'pending') {
+          const statusLabel: Record<string, string> = {
+            approved: '已通过',
+            rejected: '已拒绝',
+            withdrawn: '已撤回',
+          }
+          results.push({ id, status: 'skipped', reason: `申请状态已变更为${statusLabel[app.status] || app.status}，已被其他教务处理` })
+          continue
+        }
+
+        createSnapshot(
+          'reject_application',
+          'application',
+          id,
+          { application: app, rejectReason: reason },
+          req.userId!,
+        )
+
+        run(
+          'UPDATE applications SET status = ?, reject_reason = ?, reviewed_by = ?, reviewed_at = datetime(\'now\') WHERE id = ?',
+          ['rejected', reason, req.userId, id],
+        )
+
+        addAuditLog('reject', 'application', id, req.userId!, `批量拒绝，原因: ${reason}`)
+
+        const courseRow = queryOne<{ name: string }>('SELECT name FROM courses WHERE id = ?', [app.course_id])
+        createNotification(
+          app.student_id,
+          'application_rejected',
+          '补考申请被拒绝',
+          `您的${courseRow?.name || '课程'}补考申请被拒绝，原因：${reason}`,
+          'application',
+          id,
+        )
+
+        results.push({ id, status: 'success' })
+      } catch (e) {
+        results.push({ id, status: 'failed', reason: e instanceof Error ? e.message : '处理失败' })
+      }
+    }
+
+    const successCount = results.filter((r) => r.status === 'success').length
+    const skippedCount = results.filter((r) => r.status === 'skipped').length
+    const failedCount = results.filter((r) => r.status === 'failed').length
+
+    res.json({
+      success: true,
+      data: {
+        total: ids.length,
+        success: successCount,
+        skipped: skippedCount,
+        failed: failedCount,
+        details: results,
+      },
+    })
+  } catch (error) {
+    res.status(500).json({ success: false, error: '批量拒绝失败' })
   }
 })
 

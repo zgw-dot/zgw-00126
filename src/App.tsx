@@ -6,6 +6,7 @@ import StudentDashboard from '@/pages/student/Dashboard';
 import StudentQualifications from '@/pages/student/Qualifications';
 import StudentApplications from '@/pages/student/Applications';
 import StudentSchedule from '@/pages/student/Schedule';
+import StudentNotifications from '@/pages/student/Notifications';
 import TeacherDashboard from '@/pages/teacher/Dashboard';
 import TeacherCourses from '@/pages/teacher/Courses';
 import TeacherSchedule from '@/pages/teacher/Schedule';
@@ -37,6 +38,7 @@ export default function App() {
         <Route path="/student/qualifications" element={<ProtectedRoute allowedRoles={['student']}><StudentQualifications /></ProtectedRoute>} />
         <Route path="/student/applications" element={<ProtectedRoute allowedRoles={['student']}><StudentApplications /></ProtectedRoute>} />
         <Route path="/student/schedule" element={<ProtectedRoute allowedRoles={['student']}><StudentSchedule /></ProtectedRoute>} />
+        <Route path="/student/notifications" element={<ProtectedRoute allowedRoles={['student']}><StudentNotifications /></ProtectedRoute>} />
 
         <Route path="/teacher/dashboard" element={<ProtectedRoute allowedRoles={['teacher']}><TeacherDashboard /></ProtectedRoute>} />
         <Route path="/teacher/courses" element={<ProtectedRoute allowedRoles={['teacher']}><TeacherCourses /></ProtectedRoute>} />

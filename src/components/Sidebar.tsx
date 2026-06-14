@@ -15,22 +15,18 @@ import {
   ClipboardList,
   Download,
   Sliders,
+  Bell,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { api } from '@/utils/api';
 
 interface NavItem {
   label: string;
   icon: React.ReactNode;
   path: string;
+  badge?: number;
 }
-
-const studentNav: NavItem[] = [
-  { label: '仪表盘', icon: <LayoutDashboard size={20} />, path: '/student/dashboard' },
-  { label: '我的资格', icon: <Award size={20} />, path: '/student/qualifications' },
-  { label: '补考申请', icon: <FileText size={20} />, path: '/student/applications' },
-  { label: '考试安排', icon: <Calendar size={20} />, path: '/student/schedule' },
-];
 
 const teacherNav: NavItem[] = [
   { label: '仪表盘', icon: <LayoutDashboard size={20} />, path: '/teacher/dashboard' },
@@ -50,7 +46,6 @@ const adminNav: NavItem[] = [
 ];
 
 const navMap: Record<string, NavItem[]> = {
-  student: studentNav,
   teacher: teacherNav,
   admin: adminNav,
 };
@@ -65,7 +60,38 @@ export default function Sidebar() {
   const { user, logout } = useAuthStore();
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
-  const navItems = user ? navMap[user.role] || [] : [];
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  useEffect(() => {
+    if (user?.role === 'student') {
+      api
+        .get<{ count: number }>('/notifications/unread-count')
+        .then((res) => setUnreadCount(res.count))
+        .catch(() => {});
+      const interval = setInterval(() => {
+        api
+          .get<{ count: number }>('/notifications/unread-count')
+          .then((res) => setUnreadCount(res.count))
+          .catch(() => {});
+      }, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [user]);
+
+  const studentNav: NavItem[] = [
+    { label: '仪表盘', icon: <LayoutDashboard size={20} />, path: '/student/dashboard' },
+    { label: '我的资格', icon: <Award size={20} />, path: '/student/qualifications' },
+    { label: '补考申请', icon: <FileText size={20} />, path: '/student/applications' },
+    { label: '考试安排', icon: <Calendar size={20} />, path: '/student/schedule' },
+    { label: '我的通知', icon: <Bell size={20} />, path: '/student/notifications', badge: unreadCount },
+  ];
+
+  const currentNavMap: Record<string, NavItem[]> = {
+    ...navMap,
+    student: studentNav,
+  };
+
+  const navItems = user ? currentNavMap[user.role] || [] : [];
 
   const handleLogout = () => {
     logout();
@@ -114,7 +140,17 @@ export default function Sidebar() {
             }
           >
             {item.icon}
-            {!collapsed && <span>{item.label}</span>}
+            {!collapsed && (
+              <span className="flex-1 truncate">{item.label}</span>
+            )}
+            {!collapsed && item.badge && item.badge > 0 && (
+              <span className="bg-red-500 text-white text-xs px-1.5 py-0.5 rounded-full min-w-[1.25rem] text-center">
+                {item.badge > 99 ? '99+' : item.badge}
+              </span>
+            )}
+            {collapsed && item.badge && item.badge > 0 && (
+              <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full" />
+            )}
           </NavLink>
         ))}
       </nav>

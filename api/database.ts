@@ -109,6 +109,25 @@ CREATE TABLE IF NOT EXISTS operation_snapshots (
     reverted_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    type TEXT NOT NULL,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    related_entity_type TEXT,
+    related_entity_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS notification_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL UNIQUE,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `
 
 const SEED_SQL = `
@@ -130,6 +149,12 @@ INSERT OR IGNORE INTO exam_rooms (id, name, capacity, location) VALUES
     (1, '第一考场', 30, '教学楼A101'),
     (2, '第二考场', 40, '教学楼A102'),
     (3, '第三考场', 50, '教学楼B201');
+
+INSERT OR IGNORE INTO notification_config (event_type, enabled) VALUES
+    ('application_approved', 1),
+    ('application_rejected', 1),
+    ('exam_scheduled', 1),
+    ('qualification_cancelled', 1);
 `
 
 export function saveDB(): void {
@@ -481,5 +506,98 @@ export function markSnapshotReverted(id: number): void {
   run(
     'UPDATE operation_snapshots SET reverted = 1, reverted_at = datetime(\'now\') WHERE id = ?',
     [id],
+  )
+}
+
+export function execTransaction(operations: Array<{ sql: string; params: unknown[] }>): void {
+  const database = getDB()
+  database.run('BEGIN TRANSACTION')
+  try {
+    for (const op of operations) {
+      database.run(op.sql, op.params as (string | number | null | Uint8Array)[])
+    }
+    database.run('COMMIT')
+    saveDB()
+  } catch (e) {
+    database.run('ROLLBACK')
+    throw e
+  }
+}
+
+export function isNotificationEnabled(eventType: string): boolean {
+  const row = queryOne<{ enabled: number }>(
+    'SELECT enabled FROM notification_config WHERE event_type = ?',
+    [eventType],
+  )
+  return row ? row.enabled === 1 : true
+}
+
+export function createNotification(
+  userId: number,
+  eventType: 'application_approved' | 'application_rejected' | 'exam_scheduled' | 'qualification_cancelled',
+  title: string,
+  content: string,
+  relatedEntityType?: string,
+  relatedEntityId?: number,
+): void {
+  if (!isNotificationEnabled(eventType)) return
+  run(
+    'INSERT INTO notifications (user_id, title, content, type, related_entity_type, related_entity_id) VALUES (?, ?, ?, ?, ?, ?)',
+    [userId, title, content, eventType, relatedEntityType || null, relatedEntityId || null],
+  )
+}
+
+export interface NotificationRow {
+  id: number
+  user_id: number
+  title: string
+  content: string
+  type: string
+  is_read: number
+  related_entity_type: string | null
+  related_entity_id: number | null
+  created_at: string
+}
+
+export function listNotifications(userId: number): NotificationRow[] {
+  return queryAll<NotificationRow>(
+    'SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC',
+    [userId],
+  )
+}
+
+export function getUnreadNotificationCount(userId: number): number {
+  const row = queryOne<{ cnt: number }>(
+    'SELECT COUNT(*) AS cnt FROM notifications WHERE user_id = ? AND is_read = 0',
+    [userId],
+  )
+  return row?.cnt || 0
+}
+
+export function markNotificationRead(id: number, userId: number): void {
+  run(
+    'UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?',
+    [id, userId],
+  )
+}
+
+export function markAllNotificationsRead(userId: number): void {
+  run(
+    'UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0',
+    [userId],
+  )
+}
+
+export function getNotificationConfig(): Array<{ eventType: string; enabled: boolean }> {
+  const rows = queryAll<{ event_type: string; enabled: number }>(
+    'SELECT event_type, enabled FROM notification_config',
+  )
+  return rows.map((r) => ({ eventType: r.event_type, enabled: r.enabled === 1 }))
+}
+
+export function updateNotificationConfig(eventType: string, enabled: boolean): void {
+  run(
+    'UPDATE notification_config SET enabled = ?, updated_at = datetime(\'now\') WHERE event_type = ?',
+    [enabled ? 1 : 0, eventType],
   )
 }

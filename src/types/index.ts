@@ -99,6 +99,42 @@ export interface OperationSnapshot {
   createdAt: string;
 }
 
+export type NotificationType = 'application_approved' | 'application_rejected' | 'exam_scheduled' | 'qualification_cancelled';
+
+export interface Notification {
+  id: number;
+  userId: number;
+  title: string;
+  content: string;
+  type: NotificationType;
+  isRead: boolean;
+  relatedEntityType?: string;
+  relatedEntityId?: number;
+  createdAt: string;
+}
+
+export interface NotificationConfig {
+  eventType: NotificationType;
+  enabled: boolean;
+}
+
+export type BatchResultStatus = 'success' | 'skipped' | 'failed';
+
+export interface BatchResultItem {
+  id: number;
+  status: BatchResultStatus;
+  reason?: string;
+}
+
+export interface BatchOperationResult {
+  total: number;
+  success: number;
+  skipped: number;
+  failed: number;
+  details: BatchResultItem[];
+  arrangements?: Arrangement[];
+}
+
 export interface Pagination {
   page: number;
   limit: number;

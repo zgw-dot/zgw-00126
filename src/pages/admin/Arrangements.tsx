@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, CalendarPlus } from 'lucide-react';
+import { AlertTriangle, CalendarPlus, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
 import DataTable from '@/components/DataTable';
 import Badge from '@/components/Badge';
 import Modal from '@/components/Modal';
 import { api } from '@/utils/api';
-import type { Application, ExamRoom, Arrangement } from '@/types';
+import type { Application, ExamRoom, Arrangement, BatchOperationResult, BatchResultItem } from '@/types';
 
 export default function AdminArrangements() {
   const [approvedApps, setApprovedApps] = useState<Application[]>([]);
@@ -12,6 +12,7 @@ export default function AdminArrangements() {
   const [arrangements, setArrangements] = useState<Arrangement[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
+  const [showResultModal, setShowResultModal] = useState(false);
   const [selectedAppIds, setSelectedAppIds] = useState<number[]>([]);
   const [roomId, setRoomId] = useState<number | null>(null);
   const [examDate, setExamDate] = useState('');
@@ -19,6 +20,7 @@ export default function AdminArrangements() {
   const [endTime, setEndTime] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [conflicts, setConflicts] = useState<string[]>([]);
+  const [batchResult, setBatchResult] = useState<BatchOperationResult | null>(null);
 
   const loadData = () => {
     setLoading(true);
@@ -70,13 +72,15 @@ export default function AdminArrangements() {
     if (!roomId || !examDate || !startTime || !endTime || selectedAppIds.length === 0) return;
     setSubmitting(true);
     try {
-      await api.post('/arrangements', {
+      const result = await api.post<BatchOperationResult>('/arrangements', {
         applicationIds: selectedAppIds,
         examRoomId: roomId,
         examDate,
         startTime,
         endTime,
       });
+      setBatchResult(result);
+      setShowResultModal(true);
       setShowModal(false);
       setSelectedAppIds([]);
       setRoomId(null);
@@ -105,6 +109,52 @@ export default function AdminArrangements() {
 
   const scheduledAppIds = new Set(arrangements.filter((a) => a.status === 'scheduled').map((a) => a.applicationId));
   const unscheduledApps = approvedApps.filter((a) => !scheduledAppIds.has(a.id));
+
+  const renderBatchResult = () => {
+    if (!batchResult) return null;
+    return (
+      <div className="space-y-3">
+        <div className="grid grid-cols-3 gap-3">
+          <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-center">
+            <div className="text-2xl font-bold text-green-600">{batchResult.success}</div>
+            <div className="text-xs text-green-600">成功</div>
+          </div>
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-center">
+            <div className="text-2xl font-bold text-yellow-600">{batchResult.skipped}</div>
+            <div className="text-xs text-yellow-600">跳过</div>
+          </div>
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-center">
+            <div className="text-2xl font-bold text-red-600">{batchResult.failed}</div>
+            <div className="text-xs text-red-600">失败</div>
+          </div>
+        </div>
+        <div className="max-h-60 overflow-y-auto border border-slate-200 rounded-lg">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 sticky top-0">
+              <tr>
+                <th className="px-3 py-2 text-left font-medium text-slate-600">申请ID</th>
+                <th className="px-3 py-2 text-left font-medium text-slate-600">状态</th>
+                <th className="px-3 py-2 text-left font-medium text-slate-600">说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              {batchResult.details.map((d: BatchResultItem) => (
+                <tr key={d.id} className="border-t border-slate-100">
+                  <td className="px-3 py-2">#{d.id}</td>
+                  <td className="px-3 py-2">
+                    {d.status === 'success' && <span className="text-green-600 flex items-center gap-1"><CheckCircle size={14} />成功</span>}
+                    {d.status === 'skipped' && <span className="text-yellow-600 flex items-center gap-1"><AlertCircle size={14} />跳过</span>}
+                    {d.status === 'failed' && <span className="text-red-600 flex items-center gap-1"><XCircle size={14} />失败</span>}
+                  </td>
+                  <td className="px-3 py-2 text-slate-600">{d.reason || '-'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-4">
@@ -172,24 +222,31 @@ export default function AdminArrangements() {
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">选择学生申请</label>
             <div className="max-h-40 overflow-y-auto border border-slate-300 rounded-lg p-2 space-y-1">
-              {unscheduledApps.map((app) => (
-                <label key={app.id} className="flex items-center gap-2 text-sm py-1 px-2 rounded hover:bg-slate-50">
-                  <input
-                    type="checkbox"
-                    checked={selectedAppIds.includes(app.id)}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setSelectedAppIds([...selectedAppIds, app.id]);
-                      } else {
-                        setSelectedAppIds(selectedAppIds.filter((id) => id !== app.id));
-                      }
-                    }}
-                    className="rounded text-amber-500 focus:ring-amber-400"
-                  />
-                  {app.studentName} - {app.courseName}
-                </label>
-              ))}
+              {unscheduledApps.length === 0 ? (
+                <p className="text-sm text-slate-400 text-center py-4">暂无可排考的申请</p>
+              ) : (
+                unscheduledApps.map((app) => (
+                  <label key={app.id} className="flex items-center gap-2 text-sm py-1 px-2 rounded hover:bg-slate-50">
+                    <input
+                      type="checkbox"
+                      checked={selectedAppIds.includes(app.id)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedAppIds([...selectedAppIds, app.id]);
+                        } else {
+                          setSelectedAppIds(selectedAppIds.filter((id) => id !== app.id));
+                        }
+                      }}
+                      className="rounded text-amber-500 focus:ring-amber-400"
+                    />
+                    {app.studentName} - {app.courseName}
+                  </label>
+                ))
+              )}
             </div>
+            {selectedAppIds.length > 0 && (
+              <p className="text-xs text-slate-500 mt-1">已选择 {selectedAppIds.length} 人</p>
+            )}
           </div>
 
           <div>
@@ -252,6 +309,24 @@ export default function AdminArrangements() {
             </div>
           )}
         </div>
+      </Modal>
+
+      <Modal
+        open={showResultModal}
+        onClose={() => { setShowResultModal(false); setBatchResult(null); }}
+        title="批量排考结果"
+        footer={
+          <>
+            <button
+              onClick={() => { setShowResultModal(false); setBatchResult(null); }}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-sm font-medium"
+            >
+              关闭
+            </button>
+          </>
+        }
+      >
+        {renderBatchResult()}
       </Modal>
     </div>
   );

@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express'
-import { queryAll, queryOne, run, addAuditLog, createSnapshot } from '../database.js'
+import { queryAll, queryOne, run, addAuditLog, createSnapshot, createNotification } from '../database.js'
 import { authMiddleware, requireRole } from '../middleware.js'
 
 interface QualRow {
@@ -202,6 +202,16 @@ router.post('/:id/cancel', requireRole('admin'), async (req: Request, res: Respo
     }
 
     addAuditLog('cancel', 'qualification', Number(id), req.userId!, `取消资格: ${reason}`)
+
+    const courseRow = queryOne<{ name: string }>('SELECT name FROM courses WHERE id = ?', [qual.course_id])
+    createNotification(
+      qual.student_id,
+      'qualification_cancelled',
+      '补考资格已取消',
+      `您的${courseRow?.name || '课程'}补考资格已被取消，原因：${reason}`,
+      'qualification',
+      Number(id),
+    )
 
     const updatedQual = queryOne<QualRow>(
       `SELECT q.id, q.student_id, q.course_id, q.qualified, q.source, q.status,

@@ -1,1 +1,5 @@
-Bug 1 淇锛氭垚缁╁鍏ユ敮鎸侀┘宄板垪鍚嶅拰瀛楃涓蹭笟鍔＄紪鐮侊紝15鏉″叏閮ㄥ鍏ユ垚鍔?Bug 2 淇锛氫汉宸ヨ鐩栬祫鏍煎悗鐘舵€佷负 active锛屽鐢熻兘鐪嬪埌骞舵彁浜ょ敵璇?
+馃殌 寮€濮嬮獙璇佹壒閲忓鎵?+ 閫氱煡绯荤粺
+
+馃挜 娴嬭瘯鎵ц鍑洪敊: 鉂?ASSERTION FAILED: 瀛︾敓鐧诲綍鎴愬姛
+Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 76
+  鉁?鏁欏姟绠＄悊鍛樼櫥褰曟垚鍔?
