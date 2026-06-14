@@ -19,6 +19,7 @@ import thresholdRoutes from './routes/threshold.js'
 import operationsRoutes from './routes/operations.js'
 import notificationsRoutes from './routes/notifications.js'
 import notificationConfigRoutes from './routes/notificationConfig.js'
+import statisticsRoutes from './routes/statistics.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -57,6 +58,7 @@ app.use('/api/threshold', thresholdRoutes)
 app.use('/api/operations', operationsRoutes)
 app.use('/api/notifications', notificationsRoutes)
 app.use('/api/notification-config', notificationConfigRoutes)
+app.use('/api/statistics', statisticsRoutes)
 
 app.use(
   '/api/health',

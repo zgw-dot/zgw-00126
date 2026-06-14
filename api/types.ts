@@ -154,7 +154,7 @@ export interface AuditLog {
   createdAt: string
 }
 
-export type NotificationType = 'application_approved' | 'application_rejected' | 'exam_scheduled' | 'qualification_cancelled'
+export type NotificationType = 'application_approved' | 'application_rejected' | 'exam_scheduled' | 'qualification_cancelled' | 'low_score_alert'
 
 export interface Notification {
   id: number
@@ -198,6 +198,77 @@ export interface ApiError {
 }
 
 export type ApiResponse<T = unknown> = ApiSuccess<T> | ApiError
+
+export interface ScoreRange {
+  min: number
+  max: number
+  label: string
+}
+
+export interface ReportSubjectData {
+  subjectId: number
+  subjectName: string
+  averageScore: number
+  passRate: number
+  scoreDistribution: Record<string, number>
+  belowThreshold: boolean
+}
+
+export interface ReportStudentData {
+  studentId: number
+  studentName: string
+  grade: string
+  classNo: string
+  subjectId: number
+  subjectName: string
+  currentScore: number
+  previousScore?: number
+  scoreChange?: number
+  classRank: number
+  gradeRank: number
+  previousClassRank?: number
+  previousGradeRank?: number
+  rankChange?: string
+  changeMarker?: 'up' | 'down' | 'same'
+}
+
+export interface StatReport {
+  id: number
+  name: string
+  grade: string
+  subjectIds: number[]
+  semester: string
+  scoreRanges: ScoreRange[]
+  createdBy: number
+  createdAt: string
+  creatorName?: string
+  subjects?: ReportSubjectData[]
+  students?: ReportStudentData[]
+}
+
+export interface StudentGradeHistory {
+  courseId: number
+  courseName: string
+  courseCode: string
+  semester: string
+  score: number
+  classRank?: number
+  gradeRank?: number
+  rankChange?: string
+}
+
+export interface GenerateReportRequest {
+  name: string
+  grade: string
+  subjectIds: number[]
+  semester: string
+  scoreRanges: ScoreRange[]
+}
+
+export interface CompareReportsRequest {
+  reportIds: number[]
+  classNo?: string
+}
 
 declare global {
   namespace Express {

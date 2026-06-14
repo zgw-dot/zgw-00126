@@ -16,7 +16,9 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT NOT NULL UNIQUE,
     password TEXT NOT NULL,
     name TEXT NOT NULL,
-    role TEXT NOT NULL CHECK(role IN ('student','teacher','admin'))
+    role TEXT NOT NULL CHECK(role IN ('student','teacher','admin')),
+    grade TEXT,
+    class_no TEXT
 );
 
 CREATE TABLE IF NOT EXISTS courses (
@@ -149,20 +151,96 @@ CREATE TABLE IF NOT EXISTS draft_undo_stack (
     undo_data TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS exam_definitions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    course_id INTEGER NOT NULL REFERENCES courses(id),
+    semester TEXT NOT NULL,
+    exam_date TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS stat_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    grade TEXT NOT NULL,
+    subject_ids TEXT NOT NULL,
+    semester TEXT NOT NULL,
+    score_ranges TEXT NOT NULL,
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS stat_report_subjects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id INTEGER NOT NULL REFERENCES stat_reports(id),
+    subject_id INTEGER NOT NULL REFERENCES courses(id),
+    average_score REAL NOT NULL,
+    pass_rate REAL NOT NULL,
+    score_distribution TEXT NOT NULL,
+    below_threshold INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS stat_report_students (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id INTEGER NOT NULL REFERENCES stat_reports(id),
+    student_id INTEGER NOT NULL REFERENCES users(id),
+    subject_id INTEGER NOT NULL REFERENCES courses(id),
+    current_score REAL NOT NULL,
+    previous_score REAL,
+    score_change REAL,
+    class_rank INTEGER,
+    grade_rank INTEGER,
+    previous_class_rank INTEGER,
+    previous_grade_rank INTEGER,
+    rank_change TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `
 
 const SEED_SQL = `
-INSERT OR IGNORE INTO users (id, username, password, name, role) VALUES
-    (1, 'admin', 'admin123', '教务管理员', 'admin'),
-    (2, 'teacher1', 'teacher123', '张老师', 'teacher'),
-    (3, 'student1', 'student123', '李同学', 'student'),
-    (4, 'student2', 'student123', '王同学', 'student'),
-    (5, 'student3', 'student123', '赵同学', 'student');
+INSERT OR IGNORE INTO users (id, username, password, name, role, grade, class_no) VALUES
+    (1, 'admin', 'admin123', '教务管理员', 'admin', NULL, NULL),
+    (2, 'teacher1', 'teacher123', '张老师', 'teacher', NULL, NULL),
+    (3, 'student1', 'student123', '李同学', 'student', '2023级', '1班'),
+    (4, 'student2', 'student123', '王同学', 'student', '2023级', '1班'),
+    (5, 'student3', 'student123', '赵同学', 'student', '2023级', '2班'),
+    (6, 'student4', 'student123', '钱同学', 'student', '2023级', '2班'),
+    (7, 'student5', 'student123', '孙同学', 'student', '2023级', '1班'),
+    (8, 'student6', 'student123', '周同学', 'student', '2024级', '1班'),
+    (9, 'student7', 'student123', '吴同学', 'student', '2024级', '1班'),
+    (10, 'student8', 'student123', '郑同学', 'student', '2024级', '2班');
 
 INSERT OR IGNORE INTO courses (id, name, code, semester, teacher_id) VALUES
     (1, '高等数学', 'MATH101', '2025-2026-1', 2),
     (2, '大学英语', 'ENG101', '2025-2026-1', 2),
-    (3, '数据结构', 'CS201', '2025-2026-1', 2);
+    (3, '数据结构', 'CS201', '2025-2026-1', 2),
+    (4, '高等数学', 'MATH101', '2024-2025-2', 2),
+    (5, '大学英语', 'ENG101', '2024-2025-2', 2),
+    (6, '高等数学', 'MATH101', '2024-2025-1', 2),
+    (7, '大学英语', 'ENG101', '2024-2025-1', 2);
+
+INSERT OR IGNORE INTO grades (student_id, course_id, score) VALUES
+    (3, 1, 85), (3, 2, 78), (3, 3, 92),
+    (3, 4, 82), (3, 5, 75),
+    (3, 6, 78), (3, 7, 72),
+    (4, 1, 56), (4, 2, 62), (4, 3, 48),
+    (4, 4, 58), (4, 5, 60),
+    (4, 6, 55), (4, 7, 58),
+    (5, 1, 72), (5, 2, 88), (5, 3, 65),
+    (5, 4, 70), (5, 5, 85),
+    (5, 6, 68), (5, 7, 82),
+    (6, 1, 90), (6, 2, 85), (6, 3, 88),
+    (6, 4, 88), (6, 5, 82),
+    (6, 6, 85), (6, 7, 80),
+    (7, 1, 45), (7, 2, 52), (7, 3, 58),
+    (7, 4, 48), (7, 5, 55),
+    (7, 6, 42), (7, 7, 50),
+    (8, 1, 75), (8, 2, 80), (8, 3, 70),
+    (9, 1, 65), (9, 2, 70), (9, 3, 60),
+    (10, 1, 88), (10, 2, 92), (10, 3, 85);
 
 INSERT OR IGNORE INTO threshold_config (id, score, updated_by) VALUES (1, 60, 1);
 
@@ -175,7 +253,8 @@ INSERT OR IGNORE INTO notification_config (event_type, enabled) VALUES
     ('application_approved', 1),
     ('application_rejected', 1),
     ('exam_scheduled', 1),
-    ('qualification_cancelled', 1);
+    ('qualification_cancelled', 1),
+    ('low_score_alert', 1);
 `
 
 export function saveDB(): void {
@@ -746,4 +825,425 @@ export function clearDraftUndoStack(operatorId?: number): void {
   } else {
     run('DELETE FROM draft_undo_stack')
   }
+}
+
+export interface ScoreRange {
+  min: number
+  max: number
+  label: string
+}
+
+export interface CreateReportParams {
+  name: string
+  grade: string
+  subjectIds: number[]
+  semester: string
+  scoreRanges: ScoreRange[]
+  createdBy: number
+}
+
+export interface ReportSubjectData {
+  subjectId: number
+  subjectName: string
+  averageScore: number
+  passRate: number
+  scoreDistribution: Record<string, number>
+  belowThreshold: boolean
+}
+
+export interface ReportStudentData {
+  studentId: number
+  studentName: string
+  grade: string
+  classNo: string
+  subjectId: number
+  subjectName: string
+  currentScore: number
+  previousScore?: number
+  scoreChange?: number
+  classRank: number
+  gradeRank: number
+  previousClassRank?: number
+  previousGradeRank?: number
+  rankChange?: string
+  changeMarker?: 'up' | 'down' | 'same'
+}
+
+export interface StatReport {
+  id: number
+  name: string
+  grade: string
+  subjectIds: number[]
+  semester: string
+  scoreRanges: ScoreRange[]
+  createdBy: number
+  createdAt: string
+  creatorName?: string
+  subjects?: ReportSubjectData[]
+  students?: ReportStudentData[]
+}
+
+export function getGradesByGradeAndSubject(
+  grade: string,
+  subjectId: number,
+  semester: string,
+): Array<{
+  student_id: number
+  student_name: string
+  class_no: string
+  score: number
+  course_id: number
+  course_name: string
+}> {
+  return queryAll(`
+    SELECT g.student_id, u.name AS student_name, u.class_no,
+           g.score, g.course_id, c.name AS course_name
+    FROM grades g
+    JOIN users u ON g.student_id = u.id
+    JOIN courses c ON g.course_id = c.id
+    WHERE u.grade = ? AND g.course_id = ? AND c.semester = ?
+  `, [grade, subjectId, semester])
+}
+
+export function getPreviousSemesterGrades(
+  grade: string,
+  subjectCode: string,
+  currentSemester: string,
+): Array<{
+  student_id: number
+  score: number
+  semester: string
+}> {
+  return queryAll(`
+    SELECT g.student_id, g.score, c.semester
+    FROM grades g
+    JOIN users u ON g.student_id = u.id
+    JOIN courses c ON g.course_id = c.id
+    WHERE u.grade = ? AND c.code = ? AND c.semester < ?
+    ORDER BY c.semester DESC
+  `, [grade, subjectCode, currentSemester])
+}
+
+export function createStatReport(params: CreateReportParams): number {
+  const subjectIdsStr = JSON.stringify(params.subjectIds)
+  const scoreRangesStr = JSON.stringify(params.scoreRanges)
+  const database = getDB()
+
+  database.run(
+    'INSERT INTO stat_reports (name, grade, subject_ids, semester, score_ranges, created_by) VALUES (?, ?, ?, ?, ?, ?)',
+    [params.name, params.grade, subjectIdsStr, params.semester, scoreRangesStr, params.createdBy],
+  )
+
+  const result = database.exec('SELECT last_insert_rowid() AS id')
+  const id = result && result[0] && result[0].values[0] && result[0].values[0][0] as number
+  saveDB()
+  return id || 0
+}
+
+export function insertReportSubject(
+  reportId: number,
+  subjectId: number,
+  averageScore: number,
+  passRate: number,
+  scoreDistribution: Record<string, number>,
+  belowThreshold: boolean,
+): void {
+  run(
+    'INSERT INTO stat_report_subjects (report_id, subject_id, average_score, pass_rate, score_distribution, below_threshold) VALUES (?, ?, ?, ?, ?, ?)',
+    [
+      reportId,
+      subjectId,
+      averageScore,
+      passRate,
+      JSON.stringify(scoreDistribution),
+      belowThreshold ? 1 : 0,
+    ],
+  )
+}
+
+export function insertReportStudent(data: {
+  reportId: number
+  studentId: number
+  subjectId: number
+  currentScore: number
+  previousScore?: number
+  scoreChange?: number
+  classRank: number
+  gradeRank: number
+  previousClassRank?: number
+  previousGradeRank?: number
+  rankChange?: string
+}): void {
+  run(
+    `INSERT INTO stat_report_students
+     (report_id, student_id, subject_id, current_score, previous_score, score_change,
+      class_rank, grade_rank, previous_class_rank, previous_grade_rank, rank_change)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      data.reportId,
+      data.studentId,
+      data.subjectId,
+      data.currentScore,
+      data.previousScore ?? null,
+      data.scoreChange ?? null,
+      data.classRank,
+      data.gradeRank,
+      data.previousClassRank ?? null,
+      data.previousGradeRank ?? null,
+      data.rankChange ?? null,
+    ],
+  )
+}
+
+export function listStatReports(grade?: string): StatReport[] {
+  let sql = `
+    SELECT sr.*, u.name AS creator_name
+    FROM stat_reports sr
+    JOIN users u ON sr.created_by = u.id
+    WHERE 1=1
+  `
+  const params: unknown[] = []
+
+  if (grade) {
+    sql += ' AND sr.grade = ?'
+    params.push(grade)
+  }
+
+  sql += ' ORDER BY sr.created_at DESC'
+
+  const rows = queryAll<{
+    id: number
+    name: string
+    grade: string
+    subject_ids: string
+    semester: string
+    score_ranges: string
+    created_by: number
+    created_at: string
+    creator_name: string
+  }>(sql, params)
+
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    grade: row.grade,
+    subjectIds: JSON.parse(row.subject_ids),
+    semester: row.semester,
+    scoreRanges: JSON.parse(row.score_ranges),
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    creatorName: row.creator_name,
+  }))
+}
+
+export function getStatReport(reportId: number): StatReport | null {
+  const reportRow = queryOne<{
+    id: number
+    name: string
+    grade: string
+    subject_ids: string
+    semester: string
+    score_ranges: string
+    created_by: number
+    created_at: string
+  }>('SELECT * FROM stat_reports WHERE id = ?', [reportId])
+
+  if (!reportRow) return null
+
+  const subjectRows = queryAll<{
+    id: number
+    subject_id: number
+    average_score: number
+    pass_rate: number
+    score_distribution: string
+    below_threshold: number
+  }>('SELECT * FROM stat_report_subjects WHERE report_id = ?', [reportId])
+
+  const studentRows = queryAll<{
+    id: number
+    student_id: number
+    subject_id: number
+    current_score: number
+    previous_score: number | null
+    score_change: number | null
+    class_rank: number
+    grade_rank: number
+    previous_class_rank: number | null
+    previous_grade_rank: number | null
+    rank_change: string | null
+  }>('SELECT * FROM stat_report_students WHERE report_id = ?', [reportId])
+
+  const subjects: ReportSubjectData[] = subjectRows.map((s) => {
+    const course = queryOne<{ name: string }>('SELECT name FROM courses WHERE id = ?', [s.subject_id])
+    return {
+      subjectId: s.subject_id,
+      subjectName: course?.name || '',
+      averageScore: s.average_score,
+      passRate: s.pass_rate,
+      scoreDistribution: JSON.parse(s.score_distribution),
+      belowThreshold: s.below_threshold === 1,
+    }
+  })
+
+  const studentMap = new Map<string, ReportStudentData>()
+  for (const s of studentRows) {
+    const student = queryOne<{ name: string; grade: string; class_no: string }>(
+      'SELECT name, grade, class_no FROM users WHERE id = ?',
+      [s.student_id],
+    )
+    const course = queryOne<{ name: string }>('SELECT name FROM courses WHERE id = ?', [s.subject_id])
+
+    let changeMarker: 'up' | 'down' | 'same' | undefined
+    if (s.score_change !== null) {
+      if (s.score_change > 0) changeMarker = 'up'
+      else if (s.score_change < 0) changeMarker = 'down'
+      else changeMarker = 'same'
+    }
+
+    studentMap.set(`${s.student_id}-${s.subject_id}`, {
+      studentId: s.student_id,
+      studentName: student?.name || '',
+      grade: student?.grade || '',
+      classNo: student?.class_no || '',
+      subjectId: s.subject_id,
+      subjectName: course?.name || '',
+      currentScore: s.current_score,
+      previousScore: s.previous_score ?? undefined,
+      scoreChange: s.score_change ?? undefined,
+      classRank: s.class_rank,
+      gradeRank: s.grade_rank,
+      previousClassRank: s.previous_class_rank ?? undefined,
+      previousGradeRank: s.previous_grade_rank ?? undefined,
+      rankChange: s.rank_change ?? undefined,
+      changeMarker,
+    })
+  }
+
+  return {
+    id: reportRow.id,
+    name: reportRow.name,
+    grade: reportRow.grade,
+    subjectIds: JSON.parse(reportRow.subject_ids),
+    semester: reportRow.semester,
+    scoreRanges: JSON.parse(reportRow.score_ranges),
+    createdBy: reportRow.created_by,
+    createdAt: reportRow.created_at,
+    subjects,
+    students: Array.from(studentMap.values()),
+  }
+}
+
+export function getStudentGradeHistory(
+  studentId: number,
+): Array<{
+  courseId: number
+  courseName: string
+  courseCode: string
+  semester: string
+  score: number
+  classRank?: number
+  gradeRank?: number
+}> {
+  const grades = queryAll<{
+    course_id: number
+    course_name: string
+    course_code: string
+    semester: string
+    score: number
+    class_no: string
+    grade: string
+  }>(`
+    SELECT g.course_id, c.name AS course_name, c.code AS course_code,
+           c.semester, g.score, u.class_no, u.grade
+    FROM grades g
+    JOIN courses c ON g.course_id = c.id
+    JOIN users u ON g.student_id = u.id
+    WHERE g.student_id = ?
+    ORDER BY c.semester DESC
+  `, [studentId])
+
+  return grades.map((g) => {
+    const classRanks = queryAll<{ student_id: number; score: number }>(`
+      SELECT g.student_id, g.score
+      FROM grades g
+      JOIN users u ON g.student_id = u.id
+      WHERE g.course_id = ? AND u.class_no = ? AND u.grade = ?
+      ORDER BY g.score DESC
+    `, [g.course_id, g.class_no, g.grade])
+
+    const gradeRanks = queryAll<{ student_id: number; score: number }>(`
+      SELECT g.student_id, g.score
+      FROM grades g
+      JOIN users u ON g.student_id = u.id
+      WHERE g.course_id = ? AND u.grade = ?
+      ORDER BY g.score DESC
+    `, [g.course_id, g.grade])
+
+    const classRank = classRanks.findIndex((r) => r.student_id === studentId) + 1
+    const gradeRank = gradeRanks.findIndex((r) => r.student_id === studentId) + 1
+
+    return {
+      courseId: g.course_id,
+      courseName: g.course_name,
+      courseCode: g.course_code,
+      semester: g.semester,
+      score: g.score,
+      classRank: classRank || undefined,
+      gradeRank: gradeRank || undefined,
+    }
+  })
+}
+
+export function getStudentsInGradeAndClass(
+  grade: string,
+  classNo?: string,
+): Array<{ id: number; name: string; class_no: string }> {
+  let sql = 'SELECT id, name, class_no FROM users WHERE role = ? AND grade = ?'
+  const params: unknown[] = ['student', grade]
+
+  if (classNo) {
+    sql += ' AND class_no = ?'
+    params.push(classNo)
+  }
+
+  return queryAll(sql, params)
+}
+
+export function bulkCreateNotification(
+  userIds: number[],
+  eventType: string,
+  title: string,
+  content: string,
+  relatedEntityType?: string,
+  relatedEntityId?: number,
+): void {
+  if (!isNotificationEnabled(eventType)) return
+
+  for (const userId of userIds) {
+    run(
+      'INSERT INTO notifications (user_id, title, content, type, related_entity_type, related_entity_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [userId, title, content, eventType, relatedEntityType || null, relatedEntityId || null],
+    )
+  }
+}
+
+export function getDistinctGrades(): string[] {
+  const rows = queryAll<{ grade: string }>(
+    "SELECT DISTINCT grade FROM users WHERE grade IS NOT NULL AND role = 'student' ORDER BY grade DESC",
+  )
+  return rows.map((r) => r.grade)
+}
+
+export function getCoursesBySemester(semester: string): Array<{ id: number; name: string; code: string }> {
+  return queryAll<{ id: number; name: string; code: string }>(
+    'SELECT id, name, code FROM courses WHERE semester = ? ORDER BY name',
+    [semester],
+  )
+}
+
+export function getDistinctSemesters(): string[] {
+  const rows = queryAll<{ semester: string }>(
+    'SELECT DISTINCT semester FROM courses ORDER BY semester DESC',
+  )
+  return rows.map((r) => r.semester)
 }
