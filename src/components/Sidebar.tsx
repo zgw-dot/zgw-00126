@@ -16,6 +16,7 @@ import {
   Download,
   Sliders,
   Bell,
+  PenTool,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useEffect, useState } from 'react';
@@ -40,6 +41,7 @@ const adminNav: NavItem[] = [
   { label: '资格管理', icon: <Award size={20} />, path: '/admin/qualifications' },
   { label: '申请审核', icon: <ClipboardList size={20} />, path: '/admin/applications' },
   { label: '考场管理', icon: <DoorOpen size={20} />, path: '/admin/exam-rooms' },
+  { label: '排考草稿', icon: <PenTool size={20} />, path: '/admin/exam-drafts' },
   { label: '考试编排', icon: <Settings size={20} />, path: '/admin/arrangements' },
   { label: '数据导出', icon: <Download size={20} />, path: '/admin/export' },
   { label: '阈值设置', icon: <Sliders size={20} />, path: '/admin/threshold' },

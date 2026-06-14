@@ -178,3 +178,27 @@ export interface Pagination {
   total: number;
   totalPages: number;
 }
+
+export type DraftUndoAction = 'add' | 'update' | 'delete' | 'clear' | 'batch_add';
+
+export interface DraftUndoStackItem {
+  id: number;
+  operatorId: number;
+  operatorName?: string;
+  action: DraftUndoAction;
+  undoData: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface DraftUndoStackResponse {
+  stack: DraftUndoStackItem[];
+  count: number;
+}
+
+export interface DraftUndoResult {
+  undoneAction: DraftUndoAction;
+  description: string;
+  restoredCount: number;
+  drafts: ArrangementDraft[];
+  remainingUndoCount: number;
+}

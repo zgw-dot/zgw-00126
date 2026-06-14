@@ -16,6 +16,7 @@ import AdminQualifications from '@/pages/admin/Qualifications';
 import AdminApplications from '@/pages/admin/Applications';
 import AdminExamRooms from '@/pages/admin/ExamRooms';
 import AdminArrangements from '@/pages/admin/Arrangements';
+import AdminExamDrafts from '@/pages/admin/ExamDrafts';
 import AdminExport from '@/pages/admin/Export';
 import AdminThreshold from '@/pages/admin/Threshold';
 
@@ -49,6 +50,7 @@ export default function App() {
         <Route path="/admin/qualifications" element={<ProtectedRoute allowedRoles={['admin']}><AdminQualifications /></ProtectedRoute>} />
         <Route path="/admin/applications" element={<ProtectedRoute allowedRoles={['admin']}><AdminApplications /></ProtectedRoute>} />
         <Route path="/admin/exam-rooms" element={<ProtectedRoute allowedRoles={['admin']}><AdminExamRooms /></ProtectedRoute>} />
+        <Route path="/admin/exam-drafts" element={<ProtectedRoute allowedRoles={['admin']}><AdminExamDrafts /></ProtectedRoute>} />
         <Route path="/admin/arrangements" element={<ProtectedRoute allowedRoles={['admin']}><AdminArrangements /></ProtectedRoute>} />
         <Route path="/admin/export" element={<ProtectedRoute allowedRoles={['admin']}><AdminExport /></ProtectedRoute>} />
         <Route path="/admin/threshold" element={<ProtectedRoute allowedRoles={['admin']}><AdminThreshold /></ProtectedRoute>} />

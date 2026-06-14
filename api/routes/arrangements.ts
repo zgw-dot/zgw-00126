@@ -9,6 +9,13 @@ import {
   buildSnapshotOperation,
   buildAuditLogOperation,
   execTransaction,
+  pushDraftUndo,
+  popDraftUndo,
+  listDraftUndoStack,
+  countDraftUndoStack,
+  clearDraftUndoStack,
+  type DraftUndoStackItem,
+  type DraftUndoAction,
 } from '../database.js'
 import { authMiddleware, requireRole } from '../middleware.js'
 import type {
@@ -282,6 +289,7 @@ router.post('/drafts/batch-add', requireRole('admin'), async (req: Request, res:
       toAdd.splice(available)
     }
 
+    const addedDraftIds: number[] = []
     for (const { app } of toAdd) {
       run(
         `INSERT INTO arrangement_drafts
@@ -289,11 +297,24 @@ router.post('/drafts/batch-add', requireRole('admin'), async (req: Request, res:
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [app.id, app.student_id, app.course_id, room.id, examDate, startTime, endTime, req.userId!],
       )
+      const idRow = queryOne<{ id: number }>('SELECT last_insert_rowid() AS id')
+      if (idRow) addedDraftIds.push(idRow.id)
       details.push({ applicationId: app.id, status: 'added' })
     }
 
     const addedCount = details.filter((d) => d.status === 'added').length
     const skippedCount = details.filter((d) => d.status === 'skipped').length
+
+    if (addedCount > 0) {
+      for (const draftId of addedDraftIds) {
+        addAuditLog('create', 'arrangement_draft', draftId, req.userId!,
+          `批量添加草稿: 考场${room.id}, ${examDate} ${startTime}-${endTime}`)
+      }
+      pushDraftUndo(req.userId!, 'batch_add', {
+        draftIds: addedDraftIds,
+        description: `撤销批量添加 ${addedCount} 条草稿`,
+      })
+    }
 
     res.json({
       success: true,
@@ -388,12 +409,31 @@ router.put('/drafts/:id', requireRole('admin'), async (req: Request, res: Respon
       }
     }
 
+    const beforeData = {
+      id: Number(id),
+      applicationId: draft.application_id,
+      studentId: draft.student_id,
+      courseId: draft.course_id,
+      examRoomId: draft.exam_room_id,
+      examDate: draft.exam_date,
+      startTime: draft.start_time,
+      endTime: draft.end_time,
+    }
+
     run(
       `UPDATE arrangement_drafts
        SET exam_room_id = ?, exam_date = ?, start_time = ?, end_time = ?
        WHERE id = ?`,
       [newRoomId, newDate, newStart, newEnd, Number(id)],
     )
+
+    addAuditLog('update', 'arrangement_draft', Number(id), req.userId!,
+      `修改草稿: 考场${draft.exam_room_id}→${newRoomId}, ${draft.exam_date} ${draft.start_time}-${draft.end_time}→${newDate} ${newStart}-${newEnd}`)
+
+    pushDraftUndo(req.userId!, 'update', {
+      before: beforeData,
+      description: `撤销修改草稿 #${id}`,
+    })
 
     const updated = queryOne<Record<string, unknown>>(
       `SELECT d.*,
@@ -418,22 +458,83 @@ router.delete('/drafts/:id', requireRole('admin'), async (req: Request, res: Res
   try {
     const { id } = req.params
 
-    const draft = queryOne<{ id: number }>('SELECT id FROM arrangement_drafts WHERE id = ?', [Number(id)])
+    const draft = queryOne<{
+      id: number
+      application_id: number
+      student_id: number
+      course_id: number
+      exam_room_id: number
+      exam_date: string
+      start_time: string
+      end_time: string
+      created_by: number
+    }>('SELECT * FROM arrangement_drafts WHERE id = ?', [Number(id)])
     if (!draft) {
       res.status(404).json({ success: false, error: '草稿项不存在' })
       return
     }
 
     run('DELETE FROM arrangement_drafts WHERE id = ?', [Number(id)])
+
+    addAuditLog('delete', 'arrangement_draft', Number(id), req.userId!, '删除单个草稿项')
+
+    pushDraftUndo(req.userId!, 'delete', {
+      draft: {
+        id: draft.id,
+        applicationId: draft.application_id,
+        studentId: draft.student_id,
+        courseId: draft.course_id,
+        examRoomId: draft.exam_room_id,
+        examDate: draft.exam_date,
+        startTime: draft.start_time,
+        endTime: draft.end_time,
+        createdBy: draft.created_by,
+      },
+      description: `撤销删除草稿 #${id}`,
+    })
+
     res.json({ success: true, data: null })
   } catch (error) {
     res.status(500).json({ success: false, error: '删除草稿项失败' })
   }
 })
 
-router.delete('/drafts', requireRole('admin'), async (_req: Request, res: Response): Promise<void> => {
+router.delete('/drafts', requireRole('admin'), async (req: Request, res: Response): Promise<void> => {
   try {
+    const allDrafts = queryAll<{
+      id: number
+      application_id: number
+      student_id: number
+      course_id: number
+      exam_room_id: number
+      exam_date: string
+      start_time: string
+      end_time: string
+      created_by: number
+    }>('SELECT * FROM arrangement_drafts')
+
     run('DELETE FROM arrangement_drafts')
+
+    if (allDrafts.length > 0) {
+      for (const d of allDrafts) {
+        addAuditLog('delete', 'arrangement_draft', d.id, req.userId!, '批量清空草稿')
+      }
+      pushDraftUndo(req.userId!, 'clear', {
+        drafts: allDrafts.map((d) => ({
+          id: d.id,
+          applicationId: d.application_id,
+          studentId: d.student_id,
+          courseId: d.course_id,
+          examRoomId: d.exam_room_id,
+          examDate: d.exam_date,
+          startTime: d.start_time,
+          endTime: d.end_time,
+          createdBy: d.created_by,
+        })),
+        description: `撤销清空 ${allDrafts.length} 条草稿`,
+      })
+    }
+
     res.json({ success: true, data: null })
   } catch (error) {
     res.status(500).json({ success: false, error: '清空草稿失败' })
@@ -570,6 +671,7 @@ router.post('/drafts/publish', requireRole('admin'), async (req: Request, res: R
         success: false,
         error: `发布前检查发现 ${failedCount} 项冲突，请修正后重试`,
         data: {
+          success: false,
           total: drafts.length,
           published: 0,
           failed: failedCount,
@@ -704,9 +806,12 @@ router.post('/drafts/publish', requireRole('admin'), async (req: Request, res: R
         insertedIds,
       ).map(buildArrangementRow)
 
+      clearDraftUndoStack(req.userId!)
+
       res.json({
         success: true,
         data: {
+          success: true,
           total: drafts.length,
           published: publishedArrangements.length,
           failed: 0,
@@ -723,6 +828,7 @@ router.post('/drafts/publish', requireRole('admin'), async (req: Request, res: R
         success: false,
         error: `发布失败，已全部回滚：${e instanceof Error ? e.message : '未知错误'}`,
         data: {
+          success: false,
           total: drafts.length,
           published: 0,
           failed: drafts.length,
@@ -737,6 +843,153 @@ router.post('/drafts/publish', requireRole('admin'), async (req: Request, res: R
     }
   } catch (error) {
     res.status(500).json({ success: false, error: '发布草稿失败' })
+  }
+})
+
+router.get('/drafts/undo-stack', requireRole('admin'), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const stack = listDraftUndoStack(req.userId!, 20)
+    const count = countDraftUndoStack(req.userId!)
+    res.json({ success: true, data: { stack, count } })
+  } catch (error) {
+    res.status(500).json({ success: false, error: '获取撤销栈失败' })
+  }
+})
+
+router.post('/drafts/undo', requireRole('admin'), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const item = popDraftUndo(req.userId!)
+    if (!item) {
+      res.status(400).json({ success: false, error: '撤销栈为空，无可回退操作' })
+      return
+    }
+
+    const undoData = item.undoData
+    let restoredCount = 0
+
+    switch (item.action) {
+      case 'batch_add': {
+        const draftIds = undoData.draftIds as number[]
+        for (const id of draftIds) {
+          const exists = queryOne<{ id: number }>('SELECT id FROM arrangement_drafts WHERE id = ?', [id])
+          if (exists) {
+            run('DELETE FROM arrangement_drafts WHERE id = ?', [id])
+            addAuditLog('delete', 'arrangement_draft', id, req.userId!, '撤销批量添加，删除草稿')
+            restoredCount++
+          }
+        }
+        break
+      }
+      case 'update': {
+        const before = undoData.before as Record<string, unknown>
+        const exists = queryOne<{ id: number }>('SELECT id FROM arrangement_drafts WHERE id = ?', [Number(before.id)])
+        if (exists) {
+          run(
+            `UPDATE arrangement_drafts
+             SET exam_room_id = ?, exam_date = ?, start_time = ?, end_time = ?
+             WHERE id = ?`,
+            [
+              Number(before.examRoomId),
+              String(before.examDate),
+              String(before.startTime),
+              String(before.endTime),
+              Number(before.id),
+            ],
+          )
+          addAuditLog('update', 'arrangement_draft', Number(before.id), req.userId!, '撤销修改，恢复草稿')
+          restoredCount = 1
+        }
+        break
+      }
+      case 'delete': {
+        const draft = undoData.draft as Record<string, unknown>
+        const exists = queryOne<{ id: number }>('SELECT id FROM arrangement_drafts WHERE id = ?', [Number(draft.id)])
+        if (!exists) {
+          run(
+            `INSERT INTO arrangement_drafts
+             (id, application_id, student_id, course_id, exam_room_id, exam_date, start_time, end_time, created_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              Number(draft.id),
+              Number(draft.applicationId),
+              Number(draft.studentId),
+              Number(draft.courseId),
+              Number(draft.examRoomId),
+              String(draft.examDate),
+              String(draft.startTime),
+              String(draft.endTime),
+              Number(draft.createdBy),
+            ],
+          )
+          addAuditLog('create', 'arrangement_draft', Number(draft.id), req.userId!, '撤销删除，恢复草稿')
+          restoredCount = 1
+        }
+        break
+      }
+      case 'clear': {
+        const drafts = undoData.drafts as Array<Record<string, unknown>>
+        for (const d of drafts) {
+          const exists = queryOne<{ id: number }>('SELECT id FROM arrangement_drafts WHERE id = ?', [Number(d.id)])
+          if (!exists) {
+            run(
+              `INSERT INTO arrangement_drafts
+               (id, application_id, student_id, course_id, exam_room_id, exam_date, start_time, end_time, created_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                Number(d.id),
+                Number(d.applicationId),
+                Number(d.studentId),
+                Number(d.courseId),
+                Number(d.examRoomId),
+                String(d.examDate),
+                String(d.startTime),
+                String(d.endTime),
+                Number(d.createdBy),
+              ],
+            )
+            addAuditLog('create', 'arrangement_draft', Number(d.id), req.userId!, '撤销清空，恢复草稿')
+            restoredCount++
+          }
+        }
+        break
+      }
+    }
+
+    const drafts = queryAll<Record<string, unknown>>(
+      `SELECT d.*,
+              u.name AS studentName,
+              c.name AS courseName,
+              er.name AS examRoomName
+       FROM arrangement_drafts d
+       JOIN users u ON d.student_id = u.id
+       JOIN courses c ON d.course_id = c.id
+       JOIN exam_rooms er ON d.exam_room_id = er.id
+       ORDER BY d.exam_date, d.start_time, d.id`,
+    ).map(buildDraftRow)
+
+    const count = countDraftUndoStack(req.userId!)
+
+    res.json({
+      success: true,
+      data: {
+        undoneAction: item.action,
+        description: undoData.description as string,
+        restoredCount,
+        drafts,
+        remainingUndoCount: count,
+      },
+    })
+  } catch (error) {
+    res.status(500).json({ success: false, error: '撤销操作失败' })
+  }
+})
+
+router.post('/drafts/undo-stack/clear', requireRole('admin'), async (req: Request, res: Response): Promise<void> => {
+  try {
+    clearDraftUndoStack(req.userId!)
+    res.json({ success: true, data: null })
+  } catch (error) {
+    res.status(500).json({ success: false, error: '清空撤销栈失败' })
   }
 })
 

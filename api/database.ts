@@ -141,6 +141,14 @@ CREATE TABLE IF NOT EXISTS notification_config (
     enabled INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS draft_undo_stack (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    operator_id INTEGER NOT NULL REFERENCES users(id),
+    action TEXT NOT NULL CHECK(action IN ('add','update','delete','clear','batch_add')),
+    undo_data TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `
 
 const SEED_SQL = `
@@ -639,4 +647,103 @@ export function updateNotificationConfig(eventType: string, enabled: boolean): v
     'UPDATE notification_config SET enabled = ?, updated_at = datetime(\'now\') WHERE event_type = ?',
     [enabled ? 1 : 0, eventType],
   )
+}
+
+export type DraftUndoAction = 'add' | 'update' | 'delete' | 'clear' | 'batch_add'
+
+export interface DraftUndoStackItem {
+  id: number
+  operatorId: number
+  operatorName?: string
+  action: DraftUndoAction
+  undoData: Record<string, unknown>
+  createdAt: string
+}
+
+export function pushDraftUndo(
+  operatorId: number,
+  action: DraftUndoAction,
+  undoData: Record<string, unknown>,
+): number {
+  run(
+    'INSERT INTO draft_undo_stack (operator_id, action, undo_data) VALUES (?, ?, ?)',
+    [operatorId, action, JSON.stringify(undoData)],
+  )
+  const result = queryOne<{ id: number }>('SELECT last_insert_rowid() AS id')
+  const stackCount = countDraftUndoStack(operatorId)
+  if (stackCount > 20) {
+    const excess = queryAll<{ id: number }>(
+      'SELECT id FROM draft_undo_stack WHERE operator_id = ? ORDER BY id ASC LIMIT ?',
+      [operatorId, stackCount - 20],
+    )
+    for (const row of excess) {
+      run('DELETE FROM draft_undo_stack WHERE id = ?', [row.id])
+    }
+  }
+  return result?.id || 0
+}
+
+export function popDraftUndo(operatorId: number): DraftUndoStackItem | null {
+  const row = queryOne<{
+    id: number
+    operator_id: number
+    action: string
+    undo_data: string
+    created_at: string
+  }>(
+    'SELECT * FROM draft_undo_stack WHERE operator_id = ? ORDER BY id DESC LIMIT 1',
+    [operatorId],
+  )
+  if (!row) return null
+  run('DELETE FROM draft_undo_stack WHERE id = ?', [row.id])
+  return {
+    id: row.id,
+    operatorId: row.operator_id,
+    action: row.action as DraftUndoAction,
+    undoData: JSON.parse(row.undo_data),
+    createdAt: row.created_at,
+  }
+}
+
+export function listDraftUndoStack(operatorId: number, limit = 20): DraftUndoStackItem[] {
+  const rows = queryAll<{
+    id: number
+    operator_id: number
+    action: string
+    undo_data: string
+    created_at: string
+    operatorName: string
+  }>(
+    `SELECT dus.*, u.name AS operatorName
+     FROM draft_undo_stack dus
+     JOIN users u ON dus.operator_id = u.id
+     WHERE dus.operator_id = ?
+     ORDER BY dus.id DESC
+     LIMIT ?`,
+    [operatorId, limit],
+  )
+  return rows.map((row) => ({
+    id: row.id,
+    operatorId: row.operator_id,
+    operatorName: row.operatorName,
+    action: row.action as DraftUndoAction,
+    undoData: JSON.parse(row.undo_data),
+    createdAt: row.created_at,
+  }))
+}
+
+export function countDraftUndoStack(operatorId: number): number {
+  const row = queryOne<{ cnt: number }>(
+    'SELECT COUNT(*) AS cnt FROM draft_undo_stack WHERE operator_id = ?',
+    [operatorId],
+  )
+  return row?.cnt || 0
+}
+
+export function clearDraftUndoStack(operatorId?: number): void {
+  if (operatorId !== undefined) {
+    run('DELETE FROM draft_undo_stack WHERE operator_id = ?', [operatorId])
+  } else {
+    run('DELETE FROM draft_undo_stack')
+  }
 }
