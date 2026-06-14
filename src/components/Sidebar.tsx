@@ -17,6 +17,7 @@ import {
   Sliders,
   Bell,
   PenTool,
+  BarChart3,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useEffect, useState } from 'react';
@@ -38,6 +39,7 @@ const teacherNav: NavItem[] = [
 const adminNav: NavItem[] = [
   { label: '仪表盘', icon: <LayoutDashboard size={20} />, path: '/admin/dashboard' },
   { label: '成绩管理', icon: <Upload size={20} />, path: '/admin/grades' },
+  { label: '统计分析', icon: <BarChart3 size={20} />, path: '/admin/statistics' },
   { label: '资格管理', icon: <Award size={20} />, path: '/admin/qualifications' },
   { label: '申请审核', icon: <ClipboardList size={20} />, path: '/admin/applications' },
   { label: '考场管理', icon: <DoorOpen size={20} />, path: '/admin/exam-rooms' },
@@ -82,6 +84,7 @@ export default function Sidebar() {
 
   const studentNav: NavItem[] = [
     { label: '仪表盘', icon: <LayoutDashboard size={20} />, path: '/student/dashboard' },
+    { label: '我的成绩', icon: <BookOpen size={20} />, path: '/student/grades' },
     { label: '我的资格', icon: <Award size={20} />, path: '/student/qualifications' },
     { label: '补考申请', icon: <FileText size={20} />, path: '/student/applications' },
     { label: '考试安排', icon: <Calendar size={20} />, path: '/student/schedule' },

@@ -202,3 +202,74 @@ export interface DraftUndoResult {
   drafts: ArrangementDraft[];
   remainingUndoCount: number;
 }
+
+export interface ScoreRange {
+  min: number;
+  max: number;
+  label: string;
+}
+
+export interface ReportSubjectData {
+  subjectId: number;
+  subjectName: string;
+  averageScore: number;
+  passRate: number;
+  scoreDistribution: Record<string, number>;
+  belowThreshold: boolean;
+}
+
+export interface ReportStudentData {
+  studentId: number;
+  studentName: string;
+  grade: string;
+  classNo: string;
+  subjectId: number;
+  subjectName: string;
+  currentScore: number;
+  previousScore?: number;
+  scoreChange?: number;
+  classRank: number;
+  gradeRank: number;
+  previousClassRank?: number;
+  previousGradeRank?: number;
+  rankChange?: string;
+  changeMarker?: 'up' | 'down' | 'same';
+}
+
+export interface StatReport {
+  id: number;
+  name: string;
+  grade: string;
+  subjectIds: number[];
+  semester: string;
+  scoreRanges: ScoreRange[];
+  createdBy: number;
+  createdAt: string;
+  creatorName?: string;
+  subjects?: ReportSubjectData[];
+  students?: ReportStudentData[];
+}
+
+export interface StudentGradeHistoryItem {
+  courseId: number;
+  courseName: string;
+  courseCode: string;
+  semester: string;
+  score: number;
+  classRank?: number;
+  gradeRank?: number;
+  rankChange?: string;
+}
+
+export interface StudentGradeHistory {
+  courseCode: string;
+  courseName: string;
+  history: StudentGradeHistoryItem[];
+}
+
+export interface StatConfigOptions {
+  grades: string[];
+  semesters: string[];
+  coursesBySemester: Record<string, Array<{ id: number; name: string; code: string }>>;
+  defaultScoreRanges: ScoreRange[];
+}

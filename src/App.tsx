@@ -7,6 +7,7 @@ import StudentQualifications from '@/pages/student/Qualifications';
 import StudentApplications from '@/pages/student/Applications';
 import StudentSchedule from '@/pages/student/Schedule';
 import StudentNotifications from '@/pages/student/Notifications';
+import StudentGrades from '@/pages/student/Grades';
 import TeacherDashboard from '@/pages/teacher/Dashboard';
 import TeacherCourses from '@/pages/teacher/Courses';
 import TeacherSchedule from '@/pages/teacher/Schedule';
@@ -19,6 +20,7 @@ import AdminArrangements from '@/pages/admin/Arrangements';
 import AdminExamDrafts from '@/pages/admin/ExamDrafts';
 import AdminExport from '@/pages/admin/Export';
 import AdminThreshold from '@/pages/admin/Threshold';
+import AdminStatistics from '@/pages/admin/Statistics';
 
 function ProtectedRoute({ children, allowedRoles }: { children: React.ReactNode; allowedRoles: string[] }) {
   const { user } = useAuthStore();
@@ -40,6 +42,7 @@ export default function App() {
         <Route path="/student/applications" element={<ProtectedRoute allowedRoles={['student']}><StudentApplications /></ProtectedRoute>} />
         <Route path="/student/schedule" element={<ProtectedRoute allowedRoles={['student']}><StudentSchedule /></ProtectedRoute>} />
         <Route path="/student/notifications" element={<ProtectedRoute allowedRoles={['student']}><StudentNotifications /></ProtectedRoute>} />
+        <Route path="/student/grades" element={<ProtectedRoute allowedRoles={['student']}><StudentGrades /></ProtectedRoute>} />
 
         <Route path="/teacher/dashboard" element={<ProtectedRoute allowedRoles={['teacher']}><TeacherDashboard /></ProtectedRoute>} />
         <Route path="/teacher/courses" element={<ProtectedRoute allowedRoles={['teacher']}><TeacherCourses /></ProtectedRoute>} />
@@ -54,6 +57,7 @@ export default function App() {
         <Route path="/admin/arrangements" element={<ProtectedRoute allowedRoles={['admin']}><AdminArrangements /></ProtectedRoute>} />
         <Route path="/admin/export" element={<ProtectedRoute allowedRoles={['admin']}><AdminExport /></ProtectedRoute>} />
         <Route path="/admin/threshold" element={<ProtectedRoute allowedRoles={['admin']}><AdminThreshold /></ProtectedRoute>} />
+        <Route path="/admin/statistics" element={<ProtectedRoute allowedRoles={['admin']}><AdminStatistics /></ProtectedRoute>} />
 
         <Route path="*" element={<Navigate to={user ? `/${user.role}/dashboard` : '/login'} replace />} />
       </Routes>
