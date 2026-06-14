@@ -1,0 +1,84 @@
+export interface User {
+  id: number;
+  username: string;
+  name: string;
+  role: 'student' | 'teacher' | 'admin';
+}
+
+export interface Grade {
+  id: number;
+  studentId: number;
+  courseId: number;
+  courseName: string;
+  studentName: string;
+  score: number;
+  semester: string;
+}
+
+export interface Qualification {
+  id: number;
+  studentId: number;
+  studentName: string;
+  courseId: number;
+  courseName: string;
+  qualified: boolean;
+  source: 'auto' | 'manual_override';
+  status: 'active' | 'cancelled' | 'overridden';
+  reason?: string;
+  overriddenBy?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Application {
+  id: number;
+  studentId: number;
+  studentName: string;
+  courseId: number;
+  courseName: string;
+  qualificationId: number;
+  status: 'pending' | 'approved' | 'rejected' | 'withdrawn';
+  rejectReason?: string;
+  reviewedBy?: number;
+  reviewedAt?: string;
+  createdAt: string;
+}
+
+export interface ExamRoom {
+  id: number;
+  name: string;
+  capacity: number;
+  location: string;
+  usedSeats: number;
+}
+
+export interface Arrangement {
+  id: number;
+  applicationId: number;
+  studentId: number;
+  studentName: string;
+  courseId: number;
+  courseName: string;
+  examRoomId: number;
+  examRoomName: string;
+  examDate: string;
+  startTime: string;
+  endTime: string;
+  status: 'scheduled' | 'cancelled';
+  cancelReason?: string;
+  createdAt: string;
+}
+
+export interface ThresholdConfig {
+  id: number;
+  score: number;
+  updatedBy: number;
+  updatedAt: string;
+}
+
+export interface ThresholdHistory {
+  id: number;
+  score: number;
+  updatedBy: number;
+  updatedAt: string;
+}
