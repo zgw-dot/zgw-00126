@@ -115,7 +115,7 @@ router.post('/:id/override', requireRole('admin'), async (req: Request, res: Res
 
     run(
       `INSERT INTO qualifications (student_id, course_id, qualified, source, status, reason, overridden_by)
-       VALUES (?, ?, ?, 'manual_override', 'overridden', ?, ?)`,
+       VALUES (?, ?, ?, 'manual_override', 'active', ?, ?)`,
       [qual.student_id, qual.course_id, qualified ? 1 : 0, reason, req.userId],
     )
 

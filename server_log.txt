@@ -1,0 +1,2 @@
+鈼?injected env (0) from .env // tip: 鈱?multiple files { path: ['.env.local', '.env'] }
+Server ready on port 3002

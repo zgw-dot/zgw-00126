@@ -1,12 +1,64 @@
 import { Router, type Request, type Response } from 'express'
 import Papa from 'papaparse'
-import { queryAll, run, recalculateQualifications } from '../database.js'
+import { queryAll, queryOne, run, recalculateQualifications, getDB } from '../database.js'
 import { authMiddleware, requireRole } from '../middleware.js'
 import type { Grade } from '../types.js'
 
 const router = Router()
 
 router.use(authMiddleware)
+
+function getField(row: Record<string, unknown>, ...names: string[]): unknown {
+  for (const name of names) {
+    if (row[name] !== undefined && row[name] !== null) return row[name]
+    const lower = name.toLowerCase()
+    for (const key of Object.keys(row)) {
+      if (key.toLowerCase() === lower) return row[key]
+    }
+  }
+  return undefined
+}
+
+function getOrCreateStudent(studentId: string, studentName: string): number {
+  const existing = queryOne<{ id: number }>(
+    'SELECT id FROM users WHERE username = ? AND role = ?',
+    [studentId, 'student'],
+  )
+  if (existing) return existing.id
+
+  run(
+    'INSERT INTO users (username, password, name, role) VALUES (?, ?, ?, ?)',
+    [studentId, 'student123', studentName || studentId, 'student'],
+  )
+  const row = queryOne<{ id: number }>(
+    'SELECT id FROM users WHERE username = ? AND role = ?',
+    [studentId, 'student'],
+  )
+  return row ? row.id : 0
+}
+
+function getOrCreateCourse(courseId: string, courseName: string): number {
+  const existing = queryOne<{ id: number }>(
+    'SELECT id FROM courses WHERE code = ?',
+    [courseId],
+  )
+  if (existing) return existing.id
+
+  const teacher = queryOne<{ id: number }>(
+    "SELECT id FROM users WHERE role = 'teacher' LIMIT 1",
+  )
+  const teacherId = teacher ? teacher.id : 2
+
+  run(
+    'INSERT INTO courses (name, code, semester, teacher_id) VALUES (?, ?, ?, ?)',
+    [courseName || courseId, courseId, '2025-2026-1', teacherId],
+  )
+  const row = queryOne<{ id: number }>(
+    'SELECT id FROM courses WHERE code = ?',
+    [courseId],
+  )
+  return row ? row.id : 0
+}
 
 router.post('/import', async (req: Request, res: Response): Promise<void> => {
   try {
@@ -24,7 +76,7 @@ router.post('/import', async (req: Request, res: Response): Promise<void> => {
     const result = Papa.parse(csv, {
       header: true,
       skipEmptyLines: true,
-      dynamicTyping: true,
+      dynamicTyping: false,
     })
 
     const errors: string[] = []
@@ -32,19 +84,36 @@ router.post('/import', async (req: Request, res: Response): Promise<void> => {
 
     for (let i = 0; i < result.data.length; i++) {
       const row = result.data[i] as Record<string, unknown>
-      const studentId = Number(row.student_id)
-      const courseId = Number(row.course_id)
-      const score = Number(row.score)
 
-      if (isNaN(studentId) || isNaN(courseId) || isNaN(score)) {
-        errors.push(`第${i + 1}行: 数据格式错误 (student_id=${row.student_id}, course_id=${row.course_id}, score=${row.score})`)
+      const studentIdRaw = String(getField(row, 'studentId', 'student_id', '学号') || '')
+      const studentName = String(getField(row, 'studentName', 'student_name', '姓名') || '')
+      const courseIdRaw = String(getField(row, 'courseId', 'course_id', '课程号', '课程编号') || '')
+      const courseName = String(getField(row, 'courseName', 'course_name', '课程名', '课程名称') || '')
+      const scoreRaw = getField(row, 'score', '成绩', '分数')
+
+      if (!studentIdRaw || !courseIdRaw || scoreRaw === undefined || scoreRaw === null) {
+        errors.push(`第${i + 1}行: 缺少必要字段 (studentId=${studentIdRaw}, courseId=${courseIdRaw}, score=${scoreRaw})`)
+        continue
+      }
+
+      const score = Number(scoreRaw)
+      if (isNaN(score) || score < 0 || score > 100) {
+        errors.push(`第${i + 1}行: 成绩格式错误 (score=${scoreRaw})`)
         continue
       }
 
       try {
+        const studentDbId = getOrCreateStudent(studentIdRaw, studentName)
+        const courseDbId = getOrCreateCourse(courseIdRaw, courseName)
+
+        if (studentDbId === 0 || courseDbId === 0) {
+          errors.push(`第${i + 1}行: 用户或课程创建失败`)
+          continue
+        }
+
         run(
           'INSERT OR REPLACE INTO grades (student_id, course_id, score) VALUES (?, ?, ?)',
-          [studentId, courseId, score],
+          [studentDbId, courseDbId, score],
         )
         imported++
       } catch (err) {
