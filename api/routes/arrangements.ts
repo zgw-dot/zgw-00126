@@ -1,11 +1,744 @@
 import { Router, type Request, type Response } from 'express'
-import { queryAll, queryOne, run, addAuditLog, createSnapshot, createNotification } from '../database.js'
+import {
+  queryAll,
+  queryOne,
+  run,
+  addAuditLog,
+  createSnapshot,
+  createNotification,
+  buildSnapshotOperation,
+  buildAuditLogOperation,
+  execTransaction,
+} from '../database.js'
 import { authMiddleware, requireRole } from '../middleware.js'
-import type { Arrangement, BatchResultItem } from '../types.js'
+import type {
+  Arrangement,
+  ArrangementDraft,
+  BatchResultItem,
+  DraftPublishResult,
+} from '../types.js'
 
 const router = Router()
 
 router.use(authMiddleware)
+
+function buildArrangementRow(row: Record<string, unknown>): Arrangement {
+  return {
+    id: Number(row.id),
+    applicationId: Number(row.application_id),
+    studentId: Number(row.student_id),
+    courseId: Number(row.course_id),
+    examRoomId: Number(row.exam_room_id),
+    examDate: String(row.exam_date),
+    startTime: String(row.start_time),
+    endTime: String(row.end_time),
+    status: row.status as 'scheduled' | 'cancelled',
+    cancelReason: row.cancel_reason as string | undefined,
+    createdAt: String(row.created_at),
+    studentName: row.studentName as string | undefined,
+    courseName: row.courseName as string | undefined,
+    examRoomName: row.examRoomName as string | undefined,
+  }
+}
+
+function buildDraftRow(row: Record<string, unknown>): ArrangementDraft {
+  return {
+    id: Number(row.id),
+    applicationId: Number(row.application_id),
+    studentId: Number(row.student_id),
+    courseId: Number(row.course_id),
+    examRoomId: Number(row.exam_room_id),
+    examDate: String(row.exam_date),
+    startTime: String(row.start_time),
+    endTime: String(row.end_time),
+    createdBy: Number(row.created_by),
+    createdAt: String(row.created_at),
+    studentName: row.studentName as string | undefined,
+    courseName: row.courseName as string | undefined,
+    examRoomName: row.examRoomName as string | undefined,
+  }
+}
+
+function hasTimeOverlap(
+  s1: string,
+  e1: string,
+  s2: string,
+  e2: string,
+): boolean {
+  return !(e1 <= s2 || s1 >= e2)
+}
+
+function checkStudentConflictInScheduled(
+  studentId: number,
+  examDate: string,
+  startTime: string,
+  endTime: string,
+  excludeArrangementId?: number,
+): { id: number; courseName?: string } | null {
+  let sql = `SELECT ar.id, c.name AS courseName
+             FROM arrangements ar
+             JOIN courses c ON ar.course_id = c.id
+             WHERE ar.student_id = ?
+               AND ar.exam_date = ?
+               AND ar.status = 'scheduled'
+               AND NOT (ar.end_time <= ? OR ar.start_time >= ?)`
+  const params: unknown[] = [studentId, examDate, startTime, endTime]
+  if (excludeArrangementId !== undefined) {
+    sql += ' AND ar.id != ?'
+    params.push(excludeArrangementId)
+  }
+  sql += ' LIMIT 1'
+  return queryOne<{ id: number; courseName: string }>(sql, params)
+}
+
+function checkStudentConflictInDrafts(
+  studentId: number,
+  examDate: string,
+  startTime: string,
+  endTime: string,
+  excludeDraftId?: number,
+): { id: number; courseName?: string } | null {
+  let sql = `SELECT d.id, c.name AS courseName
+             FROM arrangement_drafts d
+             JOIN courses c ON d.course_id = c.id
+             WHERE d.student_id = ?
+               AND d.exam_date = ?
+               AND NOT (d.end_time <= ? OR d.start_time >= ?)`
+  const params: unknown[] = [studentId, examDate, startTime, endTime]
+  if (excludeDraftId !== undefined) {
+    sql += ' AND d.id != ?'
+    params.push(excludeDraftId)
+  }
+  sql += ' LIMIT 1'
+  return queryOne<{ id: number; courseName: string }>(sql, params)
+}
+
+function getRoomUsedCount(roomId: number, examDate: string): number {
+  const row = queryOne<{ count: number }>(
+    'SELECT COUNT(*) AS count FROM arrangements WHERE exam_room_id = ? AND status = ? AND exam_date = ?',
+    [roomId, 'scheduled', examDate],
+  )
+  return row?.count || 0
+}
+
+function getRoomDraftCount(roomId: number, examDate: string, excludeDraftId?: number): number {
+  let sql = 'SELECT COUNT(*) AS count FROM arrangement_drafts WHERE exam_room_id = ? AND exam_date = ?'
+  const params: unknown[] = [roomId, examDate]
+  if (excludeDraftId !== undefined) {
+    sql += ' AND id != ?'
+    params.push(excludeDraftId)
+  }
+  const row = queryOne<{ count: number }>(sql, params)
+  return row?.count || 0
+}
+
+router.get('/drafts', requireRole('admin'), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const drafts = queryAll<Record<string, unknown>>(
+      `SELECT d.*,
+              u.name AS studentName,
+              c.name AS courseName,
+              er.name AS examRoomName
+       FROM arrangement_drafts d
+       JOIN users u ON d.student_id = u.id
+       JOIN courses c ON d.course_id = c.id
+       JOIN exam_rooms er ON d.exam_room_id = er.id
+       ORDER BY d.exam_date, d.start_time, d.id`,
+    )
+    const result = drafts.map(buildDraftRow)
+    res.json({ success: true, data: result })
+  } catch (error) {
+    res.status(500).json({ success: false, error: '查询排考草稿失败' })
+  }
+})
+
+router.post('/drafts/batch-add', requireRole('admin'), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { applicationIds, examRoomId, examDate, startTime, endTime } = req.body
+
+    if (!applicationIds || !Array.isArray(applicationIds) || applicationIds.length === 0) {
+      res.status(400).json({ success: false, error: '缺少申请ID列表' })
+      return
+    }
+    if (!examRoomId || !examDate || !startTime || !endTime) {
+      res.status(400).json({ success: false, error: '缺少考场ID、考试日期或时间' })
+      return
+    }
+
+    const room = queryOne<{ id: number; capacity: number; name: string }>(
+      'SELECT id, capacity, name FROM exam_rooms WHERE id = ?',
+      [Number(examRoomId)],
+    )
+    if (!room) {
+      res.status(404).json({ success: false, error: '考场不存在' })
+      return
+    }
+
+    const details: Array<{ applicationId: number; status: 'added' | 'skipped'; reason?: string }> = []
+    const toAdd: Array<{
+      app: { id: number; student_id: number; course_id: number; status: string }
+    }> = []
+    const addedStudentIds = new Set<number>()
+
+    for (const appId of applicationIds) {
+      const id = Number(appId)
+      const app = queryOne<{ id: number; student_id: number; course_id: number; status: string }>(
+        'SELECT id, student_id, course_id, status FROM applications WHERE id = ?',
+        [id],
+      )
+
+      if (!app) {
+        details.push({ applicationId: id, status: 'skipped', reason: '申请不存在' })
+        continue
+      }
+
+      if (app.status !== 'approved') {
+        const statusLabel: Record<string, string> = {
+          pending: '待审核',
+          rejected: '已拒绝',
+          withdrawn: '已撤回',
+        }
+        details.push({
+          applicationId: id,
+          status: 'skipped',
+          reason: `申请状态为${statusLabel[app.status] || app.status}，仅已批准的申请可排考`,
+        })
+        continue
+      }
+
+      const alreadyScheduled = queryOne<{ id: number }>(
+        `SELECT id FROM arrangements WHERE application_id = ? AND status = 'scheduled'`,
+        [id],
+      )
+      if (alreadyScheduled) {
+        details.push({ applicationId: id, status: 'skipped', reason: '该申请已存在有效的排考安排' })
+        continue
+      }
+
+      const alreadyInDraft = queryOne<{ id: number }>(
+        'SELECT id FROM arrangement_drafts WHERE application_id = ?',
+        [id],
+      )
+      if (alreadyInDraft) {
+        details.push({ applicationId: id, status: 'skipped', reason: '该申请已在草稿中' })
+        continue
+      }
+
+      const scheduledConflict = checkStudentConflictInScheduled(
+        app.student_id,
+        examDate,
+        startTime,
+        endTime,
+      )
+      if (scheduledConflict) {
+        details.push({
+          applicationId: id,
+          status: 'skipped',
+          reason: `该学生在 ${examDate} ${startTime}-${endTime} 已有正式考试安排（${scheduledConflict.courseName || ''}），时间冲突`,
+        })
+        continue
+      }
+
+      const draftConflict = checkStudentConflictInDrafts(
+        app.student_id,
+        examDate,
+        startTime,
+        endTime,
+      )
+      if (draftConflict) {
+        details.push({
+          applicationId: id,
+          status: 'skipped',
+          reason: `该学生在 ${examDate} ${startTime}-${endTime} 的草稿中已有安排（${draftConflict.courseName || ''}），时间冲突`,
+        })
+        continue
+      }
+
+      if (addedStudentIds.has(app.student_id)) {
+        details.push({
+          applicationId: id,
+          status: 'skipped',
+          reason: `该学生在 ${examDate} ${startTime}-${endTime} 的同批次草稿中已有安排，时间冲突`,
+        })
+        continue
+      }
+
+      toAdd.push({ app })
+      addedStudentIds.add(app.student_id)
+    }
+
+    const currentUsed = getRoomUsedCount(room.id, examDate)
+    const currentDrafts = getRoomDraftCount(room.id, examDate)
+    const available = room.capacity - currentUsed - currentDrafts
+
+    if (toAdd.length > available && available >= 0) {
+      for (let i = available; i < toAdd.length; i++) {
+        details.push({
+          applicationId: toAdd[i].app.id,
+          status: 'skipped',
+          reason: '考场容量不足',
+        })
+      }
+      toAdd.splice(available)
+    }
+
+    for (const { app } of toAdd) {
+      run(
+        `INSERT INTO arrangement_drafts
+         (application_id, student_id, course_id, exam_room_id, exam_date, start_time, end_time, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [app.id, app.student_id, app.course_id, room.id, examDate, startTime, endTime, req.userId!],
+      )
+      details.push({ applicationId: app.id, status: 'added' })
+    }
+
+    const addedCount = details.filter((d) => d.status === 'added').length
+    const skippedCount = details.filter((d) => d.status === 'skipped').length
+
+    res.json({
+      success: true,
+      data: {
+        total: applicationIds.length,
+        added: addedCount,
+        skipped: skippedCount,
+        details,
+      },
+    })
+  } catch (error) {
+    res.status(500).json({ success: false, error: '批量添加草稿失败' })
+  }
+})
+
+router.put('/drafts/:id', requireRole('admin'), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params
+    const { examRoomId, examDate, startTime, endTime } = req.body
+
+    const draft = queryOne<{
+      id: number
+      application_id: number
+      student_id: number
+      course_id: number
+      exam_room_id: number
+      exam_date: string
+      start_time: string
+      end_time: string
+    }>('SELECT * FROM arrangement_drafts WHERE id = ?', [Number(id)])
+
+    if (!draft) {
+      res.status(404).json({ success: false, error: '草稿项不存在' })
+      return
+    }
+
+    const newRoomId = examRoomId !== undefined ? Number(examRoomId) : draft.exam_room_id
+    const newDate = examDate || draft.exam_date
+    const newStart = startTime || draft.start_time
+    const newEnd = endTime || draft.end_time
+
+    if (examRoomId !== undefined) {
+      const room = queryOne<{ id: number; capacity: number }>(
+        'SELECT id, capacity FROM exam_rooms WHERE id = ?',
+        [newRoomId],
+      )
+      if (!room) {
+        res.status(404).json({ success: false, error: '考场不存在' })
+        return
+      }
+    }
+
+    const scheduledConflict = checkStudentConflictInScheduled(
+      draft.student_id,
+      newDate,
+      newStart,
+      newEnd,
+    )
+    if (scheduledConflict) {
+      res.status(400).json({
+        success: false,
+        error: `该学生在 ${newDate} ${newStart}-${newEnd} 已有正式考试安排（${scheduledConflict.courseName || ''}），时间冲突`,
+      })
+      return
+    }
+
+    const draftConflict = checkStudentConflictInDrafts(
+      draft.student_id,
+      newDate,
+      newStart,
+      newEnd,
+      Number(id),
+    )
+    if (draftConflict) {
+      res.status(400).json({
+        success: false,
+        error: `该学生在 ${newDate} ${newStart}-${newEnd} 的草稿中已有其他安排，时间冲突`,
+      })
+      return
+    }
+
+    const room = queryOne<{ id: number; capacity: number }>(
+      'SELECT id, capacity FROM exam_rooms WHERE id = ?',
+      [newRoomId],
+    )
+    if (room) {
+      const used = getRoomUsedCount(newRoomId, newDate)
+      const draftCount = getRoomDraftCount(newRoomId, newDate, Number(id))
+      if (used + draftCount + 1 > room.capacity) {
+        res.status(400).json({ success: false, error: '考场容量不足' })
+        return
+      }
+    }
+
+    run(
+      `UPDATE arrangement_drafts
+       SET exam_room_id = ?, exam_date = ?, start_time = ?, end_time = ?
+       WHERE id = ?`,
+      [newRoomId, newDate, newStart, newEnd, Number(id)],
+    )
+
+    const updated = queryOne<Record<string, unknown>>(
+      `SELECT d.*,
+              u.name AS studentName,
+              c.name AS courseName,
+              er.name AS examRoomName
+       FROM arrangement_drafts d
+       JOIN users u ON d.student_id = u.id
+       JOIN courses c ON d.course_id = c.id
+       JOIN exam_rooms er ON d.exam_room_id = er.id
+       WHERE d.id = ?`,
+      [Number(id)],
+    )
+
+    res.json({ success: true, data: updated ? buildDraftRow(updated) : null })
+  } catch (error) {
+    res.status(500).json({ success: false, error: '更新草稿失败' })
+  }
+})
+
+router.delete('/drafts/:id', requireRole('admin'), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params
+
+    const draft = queryOne<{ id: number }>('SELECT id FROM arrangement_drafts WHERE id = ?', [Number(id)])
+    if (!draft) {
+      res.status(404).json({ success: false, error: '草稿项不存在' })
+      return
+    }
+
+    run('DELETE FROM arrangement_drafts WHERE id = ?', [Number(id)])
+    res.json({ success: true, data: null })
+  } catch (error) {
+    res.status(500).json({ success: false, error: '删除草稿项失败' })
+  }
+})
+
+router.delete('/drafts', requireRole('admin'), async (_req: Request, res: Response): Promise<void> => {
+  try {
+    run('DELETE FROM arrangement_drafts')
+    res.json({ success: true, data: null })
+  } catch (error) {
+    res.status(500).json({ success: false, error: '清空草稿失败' })
+  }
+})
+
+router.post('/drafts/publish', requireRole('admin'), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const drafts = queryAll<{
+      id: number
+      application_id: number
+      student_id: number
+      course_id: number
+      exam_room_id: number
+      exam_date: string
+      start_time: string
+      end_time: string
+      studentName: string
+      courseName: string
+      examRoomName: string
+    }>(
+      `SELECT d.*,
+              u.name AS studentName,
+              c.name AS courseName,
+              er.name AS examRoomName
+       FROM arrangement_drafts d
+       JOIN users u ON d.student_id = u.id
+       JOIN courses c ON d.course_id = c.id
+       JOIN exam_rooms er ON d.exam_room_id = er.id
+       ORDER BY d.id`,
+    )
+
+    if (drafts.length === 0) {
+      res.status(400).json({ success: false, error: '草稿为空，无可发布的排考' })
+      return
+    }
+
+    const details: BatchResultItem[] = []
+    const toPublish: typeof drafts = []
+    const publishedByStudent: Map<number, Array<{ date: string; start: string; end: string }>> = new Map()
+
+    for (const draft of drafts) {
+      const appId = draft.application_id
+      const app = queryOne<{ id: number; status: string }>(
+        'SELECT id, status FROM applications WHERE id = ?',
+        [appId],
+      )
+
+      if (!app || app.status !== 'approved') {
+        details.push({
+          id: draft.id,
+          status: 'failed',
+          reason: '申请不存在或状态已变更，无法发布',
+        })
+        continue
+      }
+
+      const alreadyScheduled = queryOne<{ id: number }>(
+        `SELECT id FROM arrangements WHERE application_id = ? AND status = 'scheduled'`,
+        [appId],
+      )
+      if (alreadyScheduled) {
+        details.push({
+          id: draft.id,
+          status: 'skipped',
+          reason: '该申请已存在有效的排考安排',
+        })
+        continue
+      }
+
+      const scheduledConflict = checkStudentConflictInScheduled(
+        draft.student_id,
+        draft.exam_date,
+        draft.start_time,
+        draft.end_time,
+      )
+      if (scheduledConflict) {
+        details.push({
+          id: draft.id,
+          status: 'failed',
+          reason: `学生在 ${draft.exam_date} ${draft.start_time}-${draft.end_time} 已有正式考试安排，时间冲突`,
+        })
+        continue
+      }
+
+      const studentPublished = publishedByStudent.get(draft.student_id) || []
+      const draftSelfConflict = studentPublished.some(
+        (s) => s.date === draft.exam_date && hasTimeOverlap(s.start, s.end, draft.start_time, draft.end_time),
+      )
+      if (draftSelfConflict) {
+        details.push({
+          id: draft.id,
+          status: 'failed',
+          reason: `学生在 ${draft.exam_date} ${draft.start_time}-${draft.end_time} 的待发布草稿中已有其他安排，时间冲突`,
+        })
+        continue
+      }
+
+      const room = queryOne<{ id: number; capacity: number }>(
+        'SELECT id, capacity FROM exam_rooms WHERE id = ?',
+        [draft.exam_room_id],
+      )
+      if (!room) {
+        details.push({ id: draft.id, status: 'failed', reason: '考场不存在' })
+        continue
+      }
+
+      const used = getRoomUsedCount(room.id, draft.exam_date)
+      const otherDraftsSameRoom = drafts.filter(
+        (d) =>
+          d.exam_room_id === draft.exam_room_id &&
+          d.exam_date === draft.exam_date &&
+          d.id !== draft.id,
+      ).length
+      if (used + otherDraftsSameRoom + 1 > room.capacity) {
+        details.push({ id: draft.id, status: 'failed', reason: '考场容量不足' })
+        continue
+      }
+
+      toPublish.push(draft)
+      if (!publishedByStudent.has(draft.student_id)) {
+        publishedByStudent.set(draft.student_id, [])
+      }
+      publishedByStudent.get(draft.student_id)!.push({
+        date: draft.exam_date,
+        start: draft.start_time,
+        end: draft.end_time,
+      })
+    }
+
+    const failedCount = details.filter((d) => d.status === 'failed').length
+    if (failedCount > 0) {
+      res.json({
+        success: false,
+        error: `发布前检查发现 ${failedCount} 项冲突，请修正后重试`,
+        data: {
+          total: drafts.length,
+          published: 0,
+          failed: failedCount,
+          skipped: details.filter((d) => d.status === 'skipped').length,
+          details,
+        } as DraftPublishResult,
+      })
+      return
+    }
+
+    const txOps: Array<{ sql: string; params: unknown[] }> = []
+    const arrangementIds: number[] = []
+
+    for (const draft of toPublish) {
+      txOps.push({
+        sql: `INSERT INTO arrangements
+              (application_id, student_id, course_id, exam_room_id, exam_date, start_time, end_time, status)
+              VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled')`,
+        params: [
+          draft.application_id,
+          draft.student_id,
+          draft.course_id,
+          draft.exam_room_id,
+          draft.exam_date,
+          draft.start_time,
+          draft.end_time,
+        ],
+      })
+      txOps.push({
+        sql: 'SELECT last_insert_rowid() AS id',
+        params: [],
+      })
+    }
+
+    try {
+      const database = (await import('../database.js')).getDB()
+      database.run('BEGIN TRANSACTION')
+
+      const insertedIds: number[] = []
+
+      for (const draft of toPublish) {
+        database.run(
+          `INSERT INTO arrangements
+           (application_id, student_id, course_id, exam_room_id, exam_date, start_time, end_time, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled')`,
+          [
+            draft.application_id,
+            draft.student_id,
+            draft.course_id,
+            draft.exam_room_id,
+            draft.exam_date,
+            draft.start_time,
+            draft.end_time,
+          ] as (string | number)[],
+        )
+        const stmt = database.prepare('SELECT last_insert_rowid() AS id')
+        stmt.step()
+        const row = stmt.getAsObject() as { id: number }
+        insertedIds.push(row.id)
+        stmt.free()
+
+        database.run(
+          'INSERT INTO audit_log (action, entity_type, entity_id, operator_id, detail) VALUES (?, ?, ?, ?, ?)',
+          [
+            'create',
+            'arrangement',
+            row.id,
+            req.userId!,
+            `草稿发布: 学生${draft.student_id}, 课程${draft.course_id}, 考场${draft.exam_room_id}`,
+          ],
+        )
+
+        database.run(
+          `INSERT INTO operation_snapshots
+           (operation_type, target_type, target_id, snapshot_data, operator_id)
+           VALUES (?, ?, ?, ?, ?)`,
+          [
+            'create_arrangement',
+            'arrangement',
+            row.id,
+            JSON.stringify({
+              arrangement: {
+                id: row.id,
+                applicationId: draft.application_id,
+                studentId: draft.student_id,
+                courseId: draft.course_id,
+                examRoomId: draft.exam_room_id,
+                examDate: draft.exam_date,
+                startTime: draft.start_time,
+                endTime: draft.end_time,
+                status: 'scheduled',
+              },
+            }),
+            req.userId!,
+          ],
+        )
+      }
+
+      database.run('DELETE FROM arrangement_drafts')
+
+      database.run('COMMIT')
+
+      const { saveDB } = await import('../database.js')
+      saveDB()
+
+      for (let i = 0; i < toPublish.length; i++) {
+        const draft = toPublish[i]
+        const arrId = insertedIds[i]
+        details.push({ id: arrId, status: 'success' })
+
+        createNotification(
+          draft.student_id,
+          'exam_scheduled',
+          '考试安排已生成',
+          `您的${draft.courseName}考试已安排：${draft.examRoomName} ${draft.exam_date} ${draft.start_time}-${draft.end_time}`,
+          'arrangement',
+          arrId,
+        )
+      }
+
+      const publishedArrangements = queryAll<Record<string, unknown>>(
+        `SELECT ar.*,
+                u.name AS studentName,
+                c.name AS courseName,
+                er.name AS examRoomName
+         FROM arrangements ar
+         JOIN users u ON ar.student_id = u.id
+         JOIN courses c ON ar.course_id = c.id
+         JOIN exam_rooms er ON ar.exam_room_id = er.id
+         WHERE ar.id IN (${insertedIds.map(() => '?').join(',')})
+         ORDER BY ar.id`,
+        insertedIds,
+      ).map(buildArrangementRow)
+
+      res.json({
+        success: true,
+        data: {
+          total: drafts.length,
+          published: publishedArrangements.length,
+          failed: 0,
+          skipped: 0,
+          details,
+          arrangements: publishedArrangements,
+        } as DraftPublishResult,
+      })
+    } catch (e) {
+      const database = (await import('../database.js')).getDB()
+      database.run('ROLLBACK')
+
+      res.status(500).json({
+        success: false,
+        error: `发布失败，已全部回滚：${e instanceof Error ? e.message : '未知错误'}`,
+        data: {
+          total: drafts.length,
+          published: 0,
+          failed: drafts.length,
+          skipped: 0,
+          details: drafts.map((d) => ({
+            id: d.id,
+            status: 'failed' as const,
+            reason: '事务回滚',
+          })),
+        } as DraftPublishResult,
+      })
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: '发布草稿失败' })
+  }
+})
 
 router.post('/', requireRole('admin'), async (req: Request, res: Response): Promise<void> => {
   try {
@@ -96,7 +829,7 @@ router.post('/', requireRole('admin'), async (req: Request, res: Response): Prom
           [app.id, app.student_id, app.course_id, room.id, examDate, startTime, endTime, 'scheduled'],
         )
 
-        const arrangement = queryOne<Arrangement>(
+        const arrangement = queryOne<Record<string, unknown>>(
           `SELECT ar.id, ar.application_id, ar.student_id, ar.course_id, ar.exam_room_id,
                   ar.exam_date, ar.start_time, ar.end_time, ar.status, ar.cancel_reason, ar.created_at,
                   u.name AS studentName, c.name AS courseName, er.name AS examRoomName
@@ -110,23 +843,24 @@ router.post('/', requireRole('admin'), async (req: Request, res: Response): Prom
         )
 
         if (arrangement) {
+          const arr = buildArrangementRow(arrangement)
           createSnapshot(
             'create_arrangement',
             'arrangement',
-            arrangement.id,
-            { arrangement },
+            arr.id,
+            { arrangement: arr },
             req.userId!,
           )
-          created.push(arrangement)
-          addAuditLog('create', 'arrangement', arrangement.id, req.userId!, `批量排考: 学生${app.student_id}, 课程${app.course_id}, 考场${room.id}`)
+          created.push(arr)
+          addAuditLog('create', 'arrangement', arr.id, req.userId!, `批量排考: 学生${app.student_id}, 课程${app.course_id}, 考场${room.id}`)
 
           createNotification(
             app.student_id,
             'exam_scheduled',
             '考试安排已生成',
-            `您的${arrangement.courseName}考试已安排：${arrangement.examRoomName} ${examDate} ${startTime}-${endTime}`,
+            `您的${arr.courseName}考试已安排：${arr.examRoomName} ${examDate} ${startTime}-${endTime}`,
             'arrangement',
-            arrangement.id,
+            arr.id,
           )
 
           results.push({ id, status: 'success' })
@@ -194,7 +928,7 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
 
     sql += ' ORDER BY ar.id'
 
-    const arrangements = queryAll<Arrangement>(sql, params)
+    const arrangements = queryAll<Record<string, unknown>>(sql, params).map(buildArrangementRow)
     res.json({ success: true, data: arrangements })
   } catch (error) {
     res.status(500).json({ success: false, error: '查询排考安排失败' })
@@ -233,7 +967,7 @@ router.delete('/:id', requireRole('admin'), async (req: Request, res: Response):
 
     addAuditLog('cancel', 'arrangement', Number(id), req.userId!, `取消排考: ${reason}`)
 
-    const updated = queryOne<Arrangement>(
+    const updated = queryOne<Record<string, unknown>>(
       `SELECT ar.id, ar.application_id, ar.student_id, ar.course_id, ar.exam_room_id,
               ar.exam_date, ar.start_time, ar.end_time, ar.status, ar.cancel_reason, ar.created_at,
               u.name AS studentName, c.name AS courseName, er.name AS examRoomName
@@ -245,7 +979,7 @@ router.delete('/:id', requireRole('admin'), async (req: Request, res: Response):
       [Number(id)],
     )
 
-    res.json({ success: true, data: updated })
+    res.json({ success: true, data: updated ? buildArrangementRow(updated) : null })
   } catch (error) {
     res.status(500).json({ success: false, error: '取消排考安排失败' })
   }

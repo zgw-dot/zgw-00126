@@ -69,6 +69,43 @@ export interface Arrangement {
   createdAt: string;
 }
 
+export interface ArrangementDraft {
+  id: number;
+  applicationId: number;
+  studentId: number;
+  studentName: string;
+  courseId: number;
+  courseName: string;
+  examRoomId: number;
+  examRoomName: string;
+  examDate: string;
+  startTime: string;
+  endTime: string;
+  createdBy: number;
+  createdAt: string;
+}
+
+export interface DraftAddResult {
+  total: number;
+  added: number;
+  skipped: number;
+  details: Array<{
+    applicationId: number;
+    status: 'added' | 'skipped';
+    reason?: string;
+  }>;
+}
+
+export interface DraftPublishResult {
+  success: boolean;
+  total: number;
+  published: number;
+  failed: number;
+  skipped: number;
+  details: BatchResultItem[];
+  arrangements?: Arrangement[];
+}
+
 export interface ThresholdConfig {
   id: number;
   score: number;

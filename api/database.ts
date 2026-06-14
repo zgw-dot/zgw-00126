@@ -81,6 +81,19 @@ CREATE TABLE IF NOT EXISTS arrangements (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS arrangement_drafts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    application_id INTEGER NOT NULL REFERENCES applications(id),
+    student_id INTEGER NOT NULL REFERENCES users(id),
+    course_id INTEGER NOT NULL REFERENCES courses(id),
+    exam_room_id INTEGER NOT NULL REFERENCES exam_rooms(id),
+    exam_date TEXT NOT NULL,
+    start_time TEXT NOT NULL,
+    end_time TEXT NOT NULL,
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS threshold_config (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     score REAL NOT NULL,
