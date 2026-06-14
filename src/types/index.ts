@@ -82,3 +82,19 @@ export interface ThresholdHistory {
   updatedBy: number;
   updatedAt: string;
 }
+
+export type OperationType = 'override_qualification' | 'approve_application' | 'reject_application' | 'create_arrangement';
+export type TargetType = 'qualification' | 'application' | 'arrangement';
+
+export interface OperationSnapshot {
+  id: number;
+  operationType: OperationType;
+  targetType: TargetType;
+  targetId: number;
+  snapshotData: Record<string, unknown>;
+  operatorId: number;
+  operatorName?: string;
+  reverted: boolean;
+  revertedAt?: string;
+  createdAt: string;
+}

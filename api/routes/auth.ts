@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import { queryOne } from '../database.js'
-import { generateToken } from '../middleware.js'
+import { generateToken, authMiddleware } from '../middleware.js'
 import type { UserPublic } from '../types.js'
 
 const router = Router()
@@ -32,6 +32,29 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
     })
   } catch (error) {
     res.status(500).json({ success: false, error: '登录失败' })
+  }
+})
+
+router.get('/me', authMiddleware, async (req: Request, res: Response): Promise<void> => {
+  try {
+    if (!req.userId) {
+      res.status(401).json({ success: false, error: '未登录' })
+      return
+    }
+
+    const user = queryOne<UserPublic>(
+      'SELECT id, username, name, role FROM users WHERE id = ?',
+      [req.userId],
+    )
+
+    if (!user) {
+      res.status(404).json({ success: false, error: '用户不存在' })
+      return
+    }
+
+    res.json({ success: true, data: user })
+  } catch (error) {
+    res.status(500).json({ success: false, error: '获取用户信息失败' })
   }
 })
 

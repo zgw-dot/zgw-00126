@@ -97,6 +97,18 @@ CREATE TABLE IF NOT EXISTS audit_log (
     detail TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS operation_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_type TEXT NOT NULL,
+    target_type TEXT NOT NULL,
+    target_id INTEGER NOT NULL,
+    snapshot_data TEXT NOT NULL,
+    operator_id INTEGER NOT NULL REFERENCES users(id),
+    reverted INTEGER NOT NULL DEFAULT 0,
+    reverted_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `
 
 const SEED_SQL = `
@@ -113,6 +125,11 @@ INSERT OR IGNORE INTO courses (id, name, code, semester, teacher_id) VALUES
     (3, '数据结构', 'CS201', '2025-2026-1', 2);
 
 INSERT OR IGNORE INTO threshold_config (id, score, updated_by) VALUES (1, 60, 1);
+
+INSERT OR IGNORE INTO exam_rooms (id, name, capacity, location) VALUES
+    (1, '第一考场', 30, '教学楼A101'),
+    (2, '第二考场', 40, '教学楼A102'),
+    (3, '第三考场', 50, '教学楼B201');
 `
 
 export function saveDB(): void {
@@ -140,10 +157,11 @@ export async function initDB(): Promise<Database> {
       fs.mkdirSync(dir, { recursive: true })
     }
     db = new SQL.Database()
-    db.run(SCHEMA_SQL)
-    db.run(SEED_SQL)
-    saveDB()
   }
+
+  db.run(SCHEMA_SQL)
+  db.run(SEED_SQL)
+  saveDB()
 
   return db
 }
@@ -247,5 +265,114 @@ export function addAuditLog(
   run(
     'INSERT INTO audit_log (action, entity_type, entity_id, operator_id, detail) VALUES (?, ?, ?, ?, ?)',
     [action, entityType, entityId, operatorId, detail || null],
+  )
+}
+
+export function createSnapshot(
+  operationType: string,
+  targetType: string,
+  targetId: number,
+  snapshotData: Record<string, unknown>,
+  operatorId: number,
+): number {
+  const database = getDB()
+  database.run(
+    'INSERT INTO operation_snapshots (operation_type, target_type, target_id, snapshot_data, operator_id) VALUES (?, ?, ?, ?, ?)',
+    [operationType, targetType, targetId, JSON.stringify(snapshotData), operatorId],
+  )
+  const result = queryOne<{ id: number }>('SELECT last_insert_rowid() AS id')
+  saveDB()
+  return result?.id || 0
+}
+
+export interface OperationSnapshot {
+  id: number
+  operationType: string
+  targetType: string
+  targetId: number
+  snapshotData: Record<string, unknown>
+  operatorId: number
+  reverted: boolean
+  revertedAt?: string
+  createdAt: string
+  operatorName?: string
+}
+
+export function getSnapshotById(id: number): OperationSnapshot | null {
+  const row = queryOne<{
+    id: number
+    operation_type: string
+    target_type: string
+    target_id: number
+    snapshot_data: string
+    operator_id: number
+    reverted: number
+    reverted_at: string | null
+    created_at: string
+  }>('SELECT * FROM operation_snapshots WHERE id = ?', [id])
+
+  if (!row) return null
+
+  return {
+    id: row.id,
+    operationType: row.operation_type,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    snapshotData: JSON.parse(row.snapshot_data),
+    operatorId: row.operator_id,
+    reverted: row.reverted === 1,
+    revertedAt: row.reverted_at || undefined,
+    createdAt: row.created_at,
+  }
+}
+
+export function listSnapshots(limit = 20, operatorId?: number): OperationSnapshot[] {
+  let sql = `
+    SELECT os.*, u.name AS operatorName
+    FROM operation_snapshots os
+    JOIN users u ON os.operator_id = u.id
+    WHERE 1=1
+  `
+  const params: unknown[] = []
+
+  if (operatorId) {
+    sql += ' AND os.operator_id = ?'
+    params.push(operatorId)
+  }
+
+  sql += ' ORDER BY os.id DESC LIMIT ?'
+  params.push(limit)
+
+  const rows = queryAll<{
+    id: number
+    operation_type: string
+    target_type: string
+    target_id: number
+    snapshot_data: string
+    operator_id: number
+    reverted: number
+    reverted_at: string | null
+    created_at: string
+    operatorName: string
+  }>(sql, params)
+
+  return rows.map((row) => ({
+    id: row.id,
+    operationType: row.operation_type,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    snapshotData: JSON.parse(row.snapshot_data),
+    operatorId: row.operator_id,
+    reverted: row.reverted === 1,
+    revertedAt: row.reverted_at || undefined,
+    createdAt: row.created_at,
+    operatorName: row.operatorName,
+  }))
+}
+
+export function markSnapshotReverted(id: number): void {
+  run(
+    'UPDATE operation_snapshots SET reverted = 1, reverted_at = datetime(\'now\') WHERE id = ?',
+    [id],
   )
 }

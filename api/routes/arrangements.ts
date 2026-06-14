@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express'
-import { queryAll, queryOne, run, addAuditLog } from '../database.js'
+import { queryAll, queryOne, run, addAuditLog, createSnapshot } from '../database.js'
 import { authMiddleware, requireRole } from '../middleware.js'
 import type { Arrangement } from '../types.js'
 
@@ -93,6 +93,15 @@ router.post('/', requireRole('admin'), async (req: Request, res: Response): Prom
       )
 
       if (arrangement) {
+        createSnapshot(
+          'create_arrangement',
+          'arrangement',
+          arrangement.id,
+          {
+            arrangement,
+          },
+          req.userId!,
+        )
         created.push(arrangement)
         addAuditLog('create', 'arrangement', arrangement.id, req.userId!, `排考安排: 学生${app.student_id}, 课程${app.course_id}, 考场${examRoomId}`)
       }

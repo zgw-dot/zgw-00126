@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express'
-import { queryAll, queryOne, run, addAuditLog } from '../database.js'
+import { queryAll, queryOne, run, addAuditLog, createSnapshot } from '../database.js'
 import { authMiddleware, requireRole } from '../middleware.js'
 
 interface QualRow {
@@ -112,6 +112,18 @@ router.post('/:id/override', requireRole('admin'), async (req: Request, res: Res
       res.status(404).json({ success: false, error: '资格记录不存在' })
       return
     }
+
+    createSnapshot(
+      'override_qualification',
+      'qualification',
+      Number(id),
+      {
+        originalQualification: qual,
+        newQualified: qualified,
+        reason,
+      },
+      req.userId!,
+    )
 
     run(
       `INSERT INTO qualifications (student_id, course_id, qualified, source, status, reason, overridden_by)

@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express'
-import { queryAll, queryOne, run, addAuditLog } from '../database.js'
+import { queryAll, queryOne, run, addAuditLog, createSnapshot } from '../database.js'
 import { authMiddleware, requireRole } from '../middleware.js'
 interface AppRow {
   id: number
@@ -113,6 +113,36 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
   }
 })
 
+router.get('/:id', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params
+    const app = queryOne<AppRow>(
+      `SELECT a.id, a.student_id, a.course_id, a.qualification_id, a.status,
+              a.reject_reason, a.reviewed_by, a.reviewed_at, a.created_at,
+              u.name AS studentName, c.name AS courseName
+              FROM applications a
+              JOIN users u ON a.student_id = u.id
+              JOIN courses c ON a.course_id = c.id
+              WHERE a.id = ?`,
+      [Number(id)],
+    )
+
+    if (!app) {
+      res.status(404).json({ success: false, error: '申请不存在' })
+      return
+    }
+
+    if (req.userRole === 'student' && req.userId && app.student_id !== req.userId) {
+      res.status(403).json({ success: false, error: '无权查看该申请' })
+      return
+    }
+
+    res.json({ success: true, data: app })
+  } catch (error) {
+    res.status(500).json({ success: false, error: '查询申请详情失败' })
+  }
+})
+
 router.post('/:id/approve', requireRole('admin'), async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params
@@ -131,6 +161,16 @@ router.post('/:id/approve', requireRole('admin'), async (req: Request, res: Resp
       res.status(400).json({ success: false, error: '只能审批待审核的申请' })
       return
     }
+
+    createSnapshot(
+      'approve_application',
+      'application',
+      Number(id),
+      {
+        application: app,
+      },
+      req.userId!,
+    )
 
     run(
       'UPDATE applications SET status = ?, reviewed_by = ?, reviewed_at = datetime(\'now\') WHERE id = ?',
@@ -180,6 +220,17 @@ router.post('/:id/reject', requireRole('admin'), async (req: Request, res: Respo
       res.status(400).json({ success: false, error: '只能拒绝待审核的申请' })
       return
     }
+
+    createSnapshot(
+      'reject_application',
+      'application',
+      Number(id),
+      {
+        application: app,
+        rejectReason: reason,
+      },
+      req.userId!,
+    )
 
     run(
       'UPDATE applications SET status = ?, reject_reason = ?, reviewed_by = ?, reviewed_at = datetime(\'now\') WHERE id = ?',
