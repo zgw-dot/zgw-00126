@@ -7,9 +7,11 @@
 - **成绩管理**：支持批量导入课程成绩 CSV，自动计算补考资格
 - **资格管理**：资格来源可追溯（自动计算 / 人工覆盖），历史记录不可删除
 - **申请流程**：学生在线提交补考申请，教务审核批准或拒绝
-- **排考管理**：自动检测考试时间冲突，考场座位实时扣减与释放
+- **批量审批**：申请列表支持勾选批量通过/拒绝，事务保障数据一致性，已被他人处理的申请自动跳过并返回处理明细
+- **排考管理**：自动检测考试时间冲突，考场座位实时扣减与释放，支持批量排考
+- **站内通知**：申请状态变更（通过/拒绝）、考试安排、资格取消自动推送通知，未读红点提醒，通知事件可配置（配置存数据库）
 - **数据导出**：补考通知名单、考试安排表一键导出 CSV
-- **数据持久化**：重启后资格结果、审核历史、阈值配置、考场余量保持一致
+- **数据持久化**：重启后资格结果、审核历史、阈值配置、考场余量、通知及配置保持一致
 - **三级权限**：学生 / 教师 / 教务，角色权限隔离
 
 ## 技术栈
@@ -206,7 +208,15 @@ S004,赵六,C002,大学物理,35
 | GET | /api/applications | 申请列表 | 全部（按角色过滤） |
 | POST | /api/applications/:id/approve | 批准申请 | 教务 |
 | POST | /api/applications/:id/reject | 拒绝申请 | 教务 |
+| POST | /api/applications/batch-approve | 批量通过申请（事务） | 教务 |
+| POST | /api/applications/batch-reject | 批量拒绝申请（事务） | 教务 |
 | DELETE | /api/applications/:id | 撤回申请 | 学生 |
+| GET | /api/notifications | 通知列表 | 登录用户 |
+| GET | /api/notifications/unread-count | 未读通知数 | 登录用户 |
+| POST | /api/notifications/:id/read | 标记单条已读 | 登录用户 |
+| POST | /api/notifications/read-all | 全部标为已读 | 登录用户 |
+| GET | /api/notification-config | 通知配置列表 | 登录用户 |
+| PUT | /api/notification-config/:eventType | 修改通知配置开关 | 教务 |
 | GET | /api/exam-rooms | 考场列表 | 全部 |
 | POST | /api/exam-rooms | 新增考场 | 教务 |
 | POST | /api/arrangements | 排考 | 教务 |

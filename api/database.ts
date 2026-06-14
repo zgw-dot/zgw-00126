@@ -509,6 +509,32 @@ export function markSnapshotReverted(id: number): void {
   )
 }
 
+export function buildSnapshotOperation(
+  operationType: string,
+  targetType: string,
+  targetId: number,
+  snapshotData: Record<string, unknown>,
+  operatorId: number,
+): { sql: string; params: unknown[] } {
+  return {
+    sql: 'INSERT INTO operation_snapshots (operation_type, target_type, target_id, snapshot_data, operator_id) VALUES (?, ?, ?, ?, ?)',
+    params: [operationType, targetType, targetId, JSON.stringify(snapshotData), operatorId],
+  }
+}
+
+export function buildAuditLogOperation(
+  action: string,
+  entityType: string,
+  entityId: number,
+  operatorId: number,
+  detail?: string,
+): { sql: string; params: unknown[] } {
+  return {
+    sql: 'INSERT INTO audit_log (action, entity_type, entity_id, operator_id, detail) VALUES (?, ?, ?, ?, ?)',
+    params: [action, entityType, entityId, operatorId, detail || null],
+  }
+}
+
 export function execTransaction(operations: Array<{ sql: string; params: unknown[] }>): void {
   const database = getDB()
   database.run('BEGIN TRANSACTION')

@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express'
-import { queryAll, queryOne, run, addAuditLog, createSnapshot, createNotification } from '../database.js'
+import { queryAll, queryOne, run, addAuditLog, createSnapshot, createNotification, buildSnapshotOperation, buildAuditLogOperation, execTransaction } from '../database.js'
 import { authMiddleware, requireRole } from '../middleware.js'
 import type { BatchResultItem } from '../types.js'
 interface AppRow {
@@ -329,53 +329,97 @@ router.post('/batch-approve', requireRole('admin'), async (req: Request, res: Re
     }
 
     const results: BatchResultItem[] = []
+    const toProcess: Array<{ id: number; app: AppRow }> = []
+    const invalidIds: number[] = []
 
     for (const rawId of ids) {
       const id = Number(rawId)
-      try {
-        const app = queryOne<AppRow>('SELECT * FROM applications WHERE id = ?', [id])
-        if (!app) {
-          results.push({ id, status: 'skipped', reason: '申请不存在' })
-          continue
+      const app = queryOne<AppRow>('SELECT * FROM applications WHERE id = ?', [id])
+      if (!app) {
+        invalidIds.push(id)
+        continue
+      }
+      if (app.status !== 'pending') {
+        const statusLabel: Record<string, string> = {
+          approved: '已通过',
+          rejected: '已拒绝',
+          withdrawn: '已撤回',
         }
-        if (app.status !== 'pending') {
-          const statusLabel: Record<string, string> = {
-            approved: '已通过',
-            rejected: '已拒绝',
-            withdrawn: '已撤回',
-          }
-          results.push({ id, status: 'skipped', reason: `申请状态已变更为${statusLabel[app.status] || app.status}，已被其他教务处理` })
-          continue
-        }
+        results.push({ id, status: 'skipped', reason: `申请状态已变更为${statusLabel[app.status] || app.status}，已被其他教务处理` })
+        continue
+      }
+      toProcess.push({ id, app })
+    }
 
-        createSnapshot(
+    if (invalidIds.length > 0) {
+      const errorMsg = `申请ID不存在: ${invalidIds.join(', ')}`
+      for (const id of invalidIds) {
+        results.push({ id, status: 'failed', reason: errorMsg })
+      }
+      for (const { id } of toProcess) {
+        results.push({ id, status: 'failed', reason: errorMsg })
+      }
+      const successCount = 0
+      const skippedCount = results.filter((r) => r.status === 'skipped').length
+      const failedCount = invalidIds.length + toProcess.length
+
+      res.json({
+        success: true,
+        data: {
+          total: ids.length,
+          success: successCount,
+          skipped: skippedCount,
+          failed: failedCount,
+          details: results,
+        },
+      })
+      return
+    }
+
+    if (toProcess.length > 0) {
+      const txOps: Array<{ sql: string; params: unknown[] }> = []
+
+      for (const { id, app } of toProcess) {
+        txOps.push(buildSnapshotOperation(
           'approve_application',
           'application',
           id,
           { application: app },
           req.userId!,
-        )
-
-        run(
-          'UPDATE applications SET status = ?, reviewed_by = ?, reviewed_at = datetime(\'now\') WHERE id = ?',
-          ['approved', req.userId, id],
-        )
-
-        addAuditLog('approve', 'application', id, req.userId!, '批量审批通过')
-
-        const courseRow = queryOne<{ name: string }>('SELECT name FROM courses WHERE id = ?', [app.course_id])
-        createNotification(
-          app.student_id,
-          'application_approved',
-          '补考申请已通过',
-          `您的${courseRow?.name || '课程'}补考申请已通过审批`,
+        ))
+        txOps.push({
+          sql: 'UPDATE applications SET status = ?, reviewed_by = ?, reviewed_at = datetime(\'now\') WHERE id = ?',
+          params: ['approved', req.userId, id],
+        })
+        txOps.push(buildAuditLogOperation(
+          'approve',
           'application',
           id,
-        )
+          req.userId!,
+          '批量审批通过',
+        ))
+      }
 
-        results.push({ id, status: 'success' })
+      try {
+        execTransaction(txOps)
+
+        for (const { id, app } of toProcess) {
+          results.push({ id, status: 'success' })
+          const courseRow = queryOne<{ name: string }>('SELECT name FROM courses WHERE id = ?', [app.course_id])
+          createNotification(
+            app.student_id,
+            'application_approved',
+            '补考申请已通过',
+            `您的${courseRow?.name || '课程'}补考申请已通过审批`,
+            'application',
+            id,
+          )
+        }
       } catch (e) {
-        results.push({ id, status: 'failed', reason: e instanceof Error ? e.message : '处理失败' })
+        const errorMsg = e instanceof Error ? e.message : '事务执行失败'
+        for (const { id } of toProcess) {
+          results.push({ id, status: 'failed', reason: errorMsg })
+        }
       }
     }
 
@@ -411,53 +455,97 @@ router.post('/batch-reject', requireRole('admin'), async (req: Request, res: Res
     }
 
     const results: BatchResultItem[] = []
+    const toProcess: Array<{ id: number; app: AppRow }> = []
+    const invalidIds: number[] = []
 
     for (const rawId of ids) {
       const id = Number(rawId)
-      try {
-        const app = queryOne<AppRow>('SELECT * FROM applications WHERE id = ?', [id])
-        if (!app) {
-          results.push({ id, status: 'skipped', reason: '申请不存在' })
-          continue
+      const app = queryOne<AppRow>('SELECT * FROM applications WHERE id = ?', [id])
+      if (!app) {
+        invalidIds.push(id)
+        continue
+      }
+      if (app.status !== 'pending') {
+        const statusLabel: Record<string, string> = {
+          approved: '已通过',
+          rejected: '已拒绝',
+          withdrawn: '已撤回',
         }
-        if (app.status !== 'pending') {
-          const statusLabel: Record<string, string> = {
-            approved: '已通过',
-            rejected: '已拒绝',
-            withdrawn: '已撤回',
-          }
-          results.push({ id, status: 'skipped', reason: `申请状态已变更为${statusLabel[app.status] || app.status}，已被其他教务处理` })
-          continue
-        }
+        results.push({ id, status: 'skipped', reason: `申请状态已变更为${statusLabel[app.status] || app.status}，已被其他教务处理` })
+        continue
+      }
+      toProcess.push({ id, app })
+    }
 
-        createSnapshot(
+    if (invalidIds.length > 0) {
+      const errorMsg = `申请ID不存在: ${invalidIds.join(', ')}`
+      for (const id of invalidIds) {
+        results.push({ id, status: 'failed', reason: errorMsg })
+      }
+      for (const { id } of toProcess) {
+        results.push({ id, status: 'failed', reason: errorMsg })
+      }
+      const successCount = 0
+      const skippedCount = results.filter((r) => r.status === 'skipped').length
+      const failedCount = invalidIds.length + toProcess.length
+
+      res.json({
+        success: true,
+        data: {
+          total: ids.length,
+          success: successCount,
+          skipped: skippedCount,
+          failed: failedCount,
+          details: results,
+        },
+      })
+      return
+    }
+
+    if (toProcess.length > 0) {
+      const txOps: Array<{ sql: string; params: unknown[] }> = []
+
+      for (const { id, app } of toProcess) {
+        txOps.push(buildSnapshotOperation(
           'reject_application',
           'application',
           id,
           { application: app, rejectReason: reason },
           req.userId!,
-        )
-
-        run(
-          'UPDATE applications SET status = ?, reject_reason = ?, reviewed_by = ?, reviewed_at = datetime(\'now\') WHERE id = ?',
-          ['rejected', reason, req.userId, id],
-        )
-
-        addAuditLog('reject', 'application', id, req.userId!, `批量拒绝，原因: ${reason}`)
-
-        const courseRow = queryOne<{ name: string }>('SELECT name FROM courses WHERE id = ?', [app.course_id])
-        createNotification(
-          app.student_id,
-          'application_rejected',
-          '补考申请被拒绝',
-          `您的${courseRow?.name || '课程'}补考申请被拒绝，原因：${reason}`,
+        ))
+        txOps.push({
+          sql: 'UPDATE applications SET status = ?, reject_reason = ?, reviewed_by = ?, reviewed_at = datetime(\'now\') WHERE id = ?',
+          params: ['rejected', reason, req.userId, id],
+        })
+        txOps.push(buildAuditLogOperation(
+          'reject',
           'application',
           id,
-        )
+          req.userId!,
+          `批量拒绝，原因: ${reason}`,
+        ))
+      }
 
-        results.push({ id, status: 'success' })
+      try {
+        execTransaction(txOps)
+
+        for (const { id, app } of toProcess) {
+          results.push({ id, status: 'success' })
+          const courseRow = queryOne<{ name: string }>('SELECT name FROM courses WHERE id = ?', [app.course_id])
+          createNotification(
+            app.student_id,
+            'application_rejected',
+            '补考申请被拒绝',
+            `您的${courseRow?.name || '课程'}补考申请被拒绝，原因：${reason}`,
+            'application',
+            id,
+          )
+        }
       } catch (e) {
-        results.push({ id, status: 'failed', reason: e instanceof Error ? e.message : '处理失败' })
+        const errorMsg = e instanceof Error ? e.message : '事务执行失败'
+        for (const { id } of toProcess) {
+          results.push({ id, status: 'failed', reason: errorMsg })
+        }
       }
     }
 
